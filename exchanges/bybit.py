@@ -31,34 +31,54 @@ class BybitClient(BaseExchangeClient):
     def fetch_all_funding_rates(self) -> dict[str, FundingRate]:
         log.info("Bybit: bulk fetch starting…")
         t0 = time.time()
-        r = requests.get(REST_URL, timeout=20)
-        d = r.json()
-        if d.get("retCode") != 0:
-            raise RuntimeError(f"Bybit error: {d.get('retMsg')}")
+        last_err = None
 
-        out: dict[str, FundingRate] = {}
-        for row in d.get("result", {}).get("list", []):
-            fr = _safe_float(row.get("fundingRate"))
-            if fr is None:
+        for attempt in range(3):
+            try:
+                r = requests.get(REST_URL, timeout=20)
+                if not r.ok:
+                    raise RuntimeError(f"HTTP {r.status_code}: {r.text[:120]}")
+                d = r.json()
+                ret_code = d.get("retCode", -1)
+                if str(ret_code) != "0" and ret_code != 0:
+                    raise RuntimeError(f"Bybit API error retCode={ret_code}: {d.get('retMsg','')}")
+            except requests.exceptions.JSONDecodeError as e:
+                last_err = f"JSON decode failed (attempt {attempt+1}/3): {e}"
+                log.warning("Bybit: %s", last_err)
+                time.sleep(1)
                 continue
-            nft = _safe_int(row.get("nextFundingTime"))
-            mark = _safe_float(row.get("markPrice"))
-            idx = _safe_float(row.get("indexPrice"))
-            interval = _safe_int(row.get("fundingIntervalHour")) or 8
+            except Exception as e:
+                last_err = str(e)
+                log.warning("Bybit: fetch failed (attempt %d/3): %s", attempt + 1, e)
+                time.sleep(1)
+                continue
 
-            unified = bybit_to_unified(row["symbol"])
-            out[unified] = FundingRate(
-                symbol=unified,
-                raw_symbol=row["symbol"],
-                funding_rate=fr,
-                next_payment_rate=fr,           # Bybit: current rate IS next payment
-                mark_price=mark,
-                index_price=idx,
-                funding_next_time=nft,
-                interval_hours=interval,
-            )
-        log.info("Bybit: %d rates in %.2fs", len(out), time.time() - t0)
-        return out
+            # Success — build output
+            out: dict[str, FundingRate] = {}
+            for row in d.get("result", {}).get("list", []):
+                fr = _safe_float(row.get("fundingRate"))
+                if fr is None:
+                    continue
+                nft = _safe_int(row.get("nextFundingTime"))
+                mark = _safe_float(row.get("markPrice"))
+                idx = _safe_float(row.get("indexPrice"))
+                interval = _safe_int(row.get("fundingIntervalHour")) or 8
+
+                unified = bybit_to_unified(row["symbol"])
+                out[unified] = FundingRate(
+                    symbol=unified,
+                    raw_symbol=row["symbol"],
+                    funding_rate=fr,
+                    next_payment_rate=fr,
+                    mark_price=mark,
+                    index_price=idx,
+                    funding_next_time=nft,
+                    interval_hours=interval,
+                )
+            log.info("Bybit: %d rates in %.2fs", len(out), time.time() - t0)
+            return out
+
+        raise RuntimeError(f"Bybit fetch_all_funding_rates failed after 3 attempts: {last_err}")
 
     def fetch_ticker(self, unified_symbol: str) -> Optional[Ticker]:
         from .symbols import unified_to_native
@@ -82,7 +102,7 @@ class BybitClient(BaseExchangeClient):
                 index=_safe_float(row.get("indexPrice")),
                 ts=_safe_int(row.get("nextFundingTime")) or 0,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.warning("Bybit fetch_ticker(%s) failed: %s", unified_symbol, e)
             return None
 

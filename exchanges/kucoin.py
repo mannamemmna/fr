@@ -36,53 +36,70 @@ class KuCoinClient(BaseExchangeClient):
     def fetch_all_funding_rates(self) -> dict[str, FundingRate]:
         log.info("KuCoin: bulk fetch starting…")
         t0 = time.time()
-        r = requests.get(REST_URL, timeout=20)
-        d = r.json()
-        if d.get("code") != "200000":
-            raise RuntimeError(f"KuCoin error: {d.get('msg')}")
+        last_err = None
 
-        out: dict[str, FundingRate] = {}
-        for row in d.get("data", []):
-            sym = row.get("symbol", "")
-            if not sym:
+        for attempt in range(3):
+            try:
+                r = requests.get(REST_URL, timeout=20)
+                if not r.ok:
+                    raise RuntimeError(f"HTTP {r.status_code}: {r.text[:120]}")
+                d = r.json()
+                if d.get("code") != "200000":
+                    raise RuntimeError(f"KuCoin API error code={d.get('code')}: {d.get('msg','')}")
+            except requests.exceptions.JSONDecodeError as e:
+                last_err = f"JSON decode failed (attempt {attempt+1}/3): {e}"
+                log.warning("KuCoin: %s", last_err)
+                time.sleep(1)
                 continue
-            # Filter to USDT-margined linear perps only
-            if row.get("settleCurrency") != "USDT":
-                continue
-            if row.get("isInverse"):
-                continue
-            if row.get("status") and row["status"] != "Open":
+            except Exception as e:
+                last_err = str(e)
+                log.warning("KuCoin: fetch failed (attempt %d/3): %s", attempt + 1, e)
+                time.sleep(1)
                 continue
 
-            fr = _safe_float(row.get("fundingFeeRate"))
-            if fr is None:
-                continue
+            # Success — build output
+            out: dict[str, FundingRate] = {}
+            for row in d.get("data", []):
+                sym = row.get("symbol", "")
+                if not sym:
+                    continue
+                if row.get("settleCurrency") != "USDT":
+                    continue
+                if row.get("isInverse"):
+                    continue
+                if row.get("status") and row["status"] != "Open":
+                    continue
 
-            predicted = row.get("predictedFundingFeeRate")
-            # KuCoin UI displays fundingFeeRate as the "next payment rate"
-            next_payment = _safe_float(predicted)
-            if next_payment is None:
-                next_payment = fr
+                fr = _safe_float(row.get("fundingFeeRate"))
+                if fr is None:
+                    continue
 
-            nft = _safe_int(row.get("nextFundingRateDateTime"))
-            mark = _safe_float(row.get("markPrice"))
-            idx = _safe_float(row.get("indexPrice"))
-            granularity_ms = _safe_int(row.get("fundingRateGranularity")) or 28_800_000
-            interval_h = granularity_ms // 3_600_000
+                predicted = row.get("predictedFundingFeeRate")
+                next_payment = _safe_float(predicted)
+                if next_payment is None:
+                    next_payment = fr
 
-            unified = kucoin_to_unified(sym)
-            out[unified] = FundingRate(
-                symbol=unified,
-                raw_symbol=sym,
-                funding_rate=fr,
-                next_payment_rate=next_payment,
-                mark_price=mark,
-                index_price=idx,
-                funding_next_time=nft,
-                interval_hours=interval_h,
-            )
-        log.info("KuCoin: %d rates in %.2fs", len(out), time.time() - t0)
-        return out
+                nft = _safe_int(row.get("nextFundingRateDateTime"))
+                mark = _safe_float(row.get("markPrice"))
+                idx = _safe_float(row.get("indexPrice"))
+                granularity_ms = _safe_int(row.get("fundingRateGranularity")) or 28_800_000
+                interval_h = granularity_ms // 3_600_000
+
+                unified = kucoin_to_unified(sym)
+                out[unified] = FundingRate(
+                    symbol=unified,
+                    raw_symbol=sym,
+                    funding_rate=fr,
+                    next_payment_rate=next_payment,
+                    mark_price=mark,
+                    index_price=idx,
+                    funding_next_time=nft,
+                    interval_hours=interval_h,
+                )
+            log.info("KuCoin: %d rates in %.2fs", len(out), time.time() - t0)
+            return out
+
+        raise RuntimeError(f"KuCoin fetch_all_funding_rates failed after 3 attempts: {last_err}")
 
     def fetch_ticker(self, unified_symbol: str) -> Optional[Ticker]:
         raw = unified_to_native(self.name, unified_symbol)
@@ -105,7 +122,7 @@ class KuCoinClient(BaseExchangeClient):
                 index=None,
                 ts=_safe_int(row.get("ts")) or 0,
             )
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             log.warning("KuCoin fetch_ticker(%s) failed: %s", unified_symbol, e)
             return None
 
