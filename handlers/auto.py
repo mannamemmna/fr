@@ -53,5 +53,9 @@ async def cmd_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif cmd == "off":
         state.auto_engine.disable()
         await update.message.reply_text("🔴 *Auto mode OFF* — tidak ada order baru.", parse_mode="Markdown")
+    elif cmd == "status":
+        # Redirect ke tampilan status (panggil ulang tanpa args)
+        context.args = []
+        await cmd_auto(update, context)
     else:
-        await update.message.reply_text("Cara pakai: /auto [on|off|status]")
+        await update.message.reply_text("Cara pakai: /auto on | /auto off | /auto status")

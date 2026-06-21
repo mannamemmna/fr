@@ -1,4 +1,4 @@
-"""/help — Show all available commands with descriptions."""
+"""/help — Show all available commands."""
 
 from __future__ import annotations
 
@@ -8,18 +8,25 @@ from telegram.ext import ContextTypes
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = (
-        "*AVAILABLE COMMANDS*\n\n"
-        "/scan — Scan all pairs for funding opportunities\n"
-        "/top [N] — Top N by delta (default 10)\n"
-        "/execute SYM [amount] [leverage] — Execute paper trade\n"
-        "/close POS_ID — Close specific position\n"
-        "/closeall — Close all open positions\n"
-        "/portfolio — Balances + open positions\n"
-        "/pnl — P&L breakdown (1D, 7D, 30D)\n"
-        "/health — Exchange connectivity + ping latency\n"
-        "/mode — Show trading mode\n"
-        "/auto on|off|status — Auto trading engine\n"
-        "/start — Intro message\n"
-        "/help — This message"
+        "📋 SEMUA PERINTAH\n\n"
+        "📡 Scan\n"
+        "/scan — Scan funding rate terbaru\n"
+        "/top 10 — Top 10 peluang terbesar\n\n"
+        "💼 Trading\n"
+        "/execute BTC 100 — Buka posisi BTC modal $100\n"
+        "/close ID — Tutup satu posisi\n"
+        "/closeall — Tutup semua posisi\n\n"
+        "📊 Info\n"
+        "/portfolio — Saldo + posisi terbuka\n"
+        "/pnl — Untung/rugi 1D, 7D, 30D\n"
+        "/status — Ringkasan kondisi bot\n"
+        "/health — Koneksi exchange\n"
+        "/mode — Mode trading aktif\n\n"
+        "🤖 Otomatis\n"
+        "/auto on — Nyalakan auto trading\n"
+        "/auto off — Matikan auto trading\n"
+        "/auto status — Cek status engine\n\n"
+        "/start — Pesan sambutan\n"
+        "/help — Tampilkan pesan ini"
     )
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg)
