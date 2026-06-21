@@ -1,4 +1,4 @@
-"""/start — Intro message with command list."""
+"""/start — Welcome message with command list."""
 
 from __future__ import annotations
 
@@ -9,21 +9,29 @@ from config import PAPER_MODE
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mode = "📄 PAPER MODE" if PAPER_MODE else "🔴 LIVE MODE"
+    mode = "📄 Paper (Simulasi)" if PAPER_MODE else "🔴 Live (Real)"
     msg = (
-        f"*Funding Rate Arbitrage Bot*\n\n"
-        f"`{mode}`\n"
-        f"Set NOTIFY_CHAT_ID in .env for auto notifications\n\n"
-        f"| Command | Description |\n"
-        f"|---|---|\n"
-        f"| /scan | Scan all pairs |\n"
-        f"| /top | Top by delta |\n"
-        f"| /execute SYM | Manual entry |\n"
-        f"| /portfolio | Positions + balances |\n"
-        f"| /closeall | Close all |\n"
-        f"| /pnl | P&L summary (1D/7D/30D) |\n"
-        f"| /health | Exchange status + ping |\n"
-        f"| /auto on/off/status | Auto trading |\n"
-        f"| /help | All commands |"
+        f"🤖 *FR Bot — Funding Rate Arbitrage*\n\n"
+        f"Robot ini cari selisih funding rate Bybit vs KuCoin, "
+        f"lalu buka posisi di dua exchange buat dapetin profit.\n\n"
+        f"Mode: `{mode}`\n\n"
+        f"*Perintah Dasar*\n"
+        f"┃ `/status` — Cek kondisi bot (balance, engine, health)\n"
+        f"┃ `/scan` — Scan funding rate terbaru\n"
+        f"┃ `/top` — Pair dengan selisih terbesar\n\n"
+        f"*Trading*\n"
+        f"┃ `/execute SYM` — Buka posisi manual\n"
+        f"┃ `/close ID` — Tutup satu posisi\n"
+        f"┃ `/closeall` — Tutup semua posisi\n"
+        f"┃ `/portfolio` — Lihat posisi + balance\n\n"
+        f"*Informasi*\n"
+        f"┃ `/pnl` — Untung/rugi (1D / 7D / 30D)\n"
+        f"┃ `/health` — Cek koneksi exchange\n"
+        f"┃ `/help` — Semua perintah lengkap\n\n"
+        f"*Otomatis*\n"
+        f"┃ `/auto on` — Nyalakan auto trading\n"
+        f"┃ `/auto off` — Matikan auto trading\n"
+        f"┃ `/auto status` — Status auto engine\n\n"
+        f"_Pastikan NOTIFY_CHAT_ID sudah diisi di .env_"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")

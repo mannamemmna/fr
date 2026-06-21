@@ -11,85 +11,95 @@ from handlers.state import paper_engine, last_scan
 
 
 async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global last_scan
     if PAPER_MODE:
         summary = paper_engine.get_summary()
         positions = summary["positions"]
     else:
-        await update.message.reply_text("🔴 Live portfolio not yet implemented.")
+        await update.message.reply_text("🔴 Live portfolio belum tersedia.")
         return
 
+    balance = summary.get("balance", 0)
+    total_pnl = summary.get("total_pnl", 0)
+    realized = summary.get("realized_pnl", 0)
+    unrealized = summary.get("unrealized_pnl", 0)
     total_exposure = summary.get("total_exposure", 0)
-    bybit_balance = total_exposure
-    kucoin_balance = total_exposure
 
     if not positions:
         await update.message.reply_text(
-            f"📭 *No open positions*\n\n"
-            f"💰 Balance: `${summary['balance']:.2f}`\n"
-            f"🔹 Bybit Balance: `${bybit_balance:.2f}`\n"
-            f"🔸 KuCoin Balance: `${kucoin_balance:.2f}`\n"
-            f"📊 Realized PnL: `{summary['realized_pnl']:+.2f}`\n"
-            f"📈 Total PnL: `{summary['total_pnl']:+.2f}`",
+            f"📭 *Tidak ada posisi terbuka*\n\n"
+            f"💰 Saldo: `${balance:.2f}`\n"
+            f"📈 Total PnL: `{total_pnl:+.2f}`",
             parse_mode="Markdown",
         )
         return
 
     lines = [
-        f"*📊 PORTFOLIO*\n"
-        f"💰 Balance: `${summary['balance']:.2f}`  "
-        f"Exposure: `${total_exposure:.2f}`\n"
-        f"🔹 Bybit Balance: `${bybit_balance:.2f}`  "
-        f"🔸 KuCoin Balance: `${kucoin_balance:.2f}`\n"
-        f"📊 Realized: `{summary['realized_pnl']:+.2f}`  "
-        f"Unrealized: `{summary['unrealized_pnl']:+.2f}`\n"
-        f"📈 Total PnL: `{summary['total_pnl']:+.2f}`\n",
-        f"*Open Positions ({len(positions)}):*",
+        f"*💼 Portfolio*",
+        "",
+        f"💰 *Saldo:* `${balance:.2f}`",
+        f"📊 *Terpakai:* `${total_exposure:.2f}` (sebagai margin)",
+        f"📈 *Total PnL:* `{total_pnl:+.2f}`",
+        f"   ├─ Sudah direalisasi: `{realized:+.2f}`",
+        f"   └─ Belum direalisasi: `{unrealized:+.2f}`",
+        "",
+        f"*Posisi Terbuka ({len(positions)})*",
+        "",
     ]
 
     for p in positions:
-        pid = p["id"][:10]
+        pid = p["id"][:8]
         sym = p["symbol"]
         margin = p["amount_usd"]
         lev = p.get("leverage", "?")
-        pos_size = p.get("position_size", margin)
+        pos_size = margin * lev
         spread = p.get("entry_spread", "—")
-        dir_str = f"{p['side_bybit'].upper()} BB / {p['side_kucoin'].upper()} KC"
-
+        side_bb = p["side_bybit"].upper()
+        side_kc = p["side_kucoin"].upper()
         entry_bb = p.get("entry_price_bybit", 0)
         entry_kc = p.get("entry_price_kucoin", 0)
-        entry_prices = f"BB: ${entry_bb:.4f} // KC: ${entry_kc:.4f}"
 
-        if p["side_bybit"] == "buy":
-            liq_bb = entry_bb * (1 - 1.0 / lev)
+        # Direction explanation
+        if side_bb == "SELL":
+            dir_explain = f"Jual di Bybit / Beli di KuCoin"
         else:
+            dir_explain = f"Beli di Bybit / Jual di KuCoin"
+
+        # Entry price label
+        price_label = f"Entry: Bybit ${entry_bb:.4f} | KuCoin ${entry_kc:.4f}"
+
+        # Liq price
+        if side_bb == "BUY":  # Long
+            liq_bb = entry_bb * (1 - 1.0 / lev)
+        else:  # Short
             liq_bb = entry_bb * (1 + 1.0 / lev)
-        if p["side_kucoin"] == "buy":
+        if side_kc == "BUY":
             liq_kc = entry_kc * (1 - 1.0 / lev)
         else:
             liq_kc = entry_kc * (1 + 1.0 / lev)
-        liq_str = f"Liq: ${liq_bb:.4f}/${liq_kc:.4f}"
+        liq_label = f"Likuidasi: Bybit ~${liq_bb:.4f} / KuCoin ~${liq_kc:.4f}"
 
+        # Funding
         funding = p.get("funding_pnl")
         if funding is not None:
-            funding_str = f"Funding: `${funding:+.2f}`"
+            funding_label = f"Funding diterima: `{funding:+.2f}` USD"
         else:
-            funding_str = "Funding: ⌛ pending"
+            funding_label = "Funding: ⌛ menunggu pembayaran"
 
-        # unrealized PnL
+        # uPnL
         upnl = "—"
-        global last_scan
         if not last_scan:
             last_scan = read_opportunities()
         for o in last_scan.get("opportunities", []):
             if o["symbol"].upper() == sym.upper():
-                exit_bb = o.get("bybit_mark") or o.get("price", 0)
-                exit_kc = o.get("kucoin_mark") or o.get("price", 0)
+                exit_bb = o.get("bybit_mark") or 0
+                exit_kc = o.get("kucoin_mark") or 0
                 qty = p.get("quantity", 0)
-                if p["side_bybit"] == "buy":
+                if side_bb == "BUY":
                     pnl_bb = qty * (exit_bb - entry_bb)
                 else:
                     pnl_bb = qty * (entry_bb - exit_bb)
-                if p["side_kucoin"] == "buy":
+                if side_kc == "BUY":
                     pnl_kc = qty * (exit_kc - entry_kc)
                 else:
                     pnl_kc = qty * (entry_kc - exit_kc)
@@ -97,11 +107,15 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 break
 
         lines.append(
-            f"`{pid}…` *{sym}* — Margin: `${margin:.0f}` × {lev}x = `${pos_size:.0f}`\n"
-            f"  {dir_str}  |  Spread: `{spread}%`  |  uPnL: {upnl}\n"
-            f"  {entry_prices}\n"
-            f"  {liq_str}  |  {funding_str}\n"
-            f"  _Close: /close {pid}_"
+            f"🪙 *{sym}* `{pid}`\n"
+            f"├─ Margin: `${margin:.0f}` × {lev}x = *${pos_size:.0f}*\n"
+            f"├─ Arah: {dir_explain}\n"
+            f"├─ {price_label}\n"
+            f"├─ {liq_label}\n"
+            f"├─ {funding_label}\n"
+            f"├─ Selisih FR saat entry: `{spread}%`\n"
+            f"├─ Profit/Loss saat ini: {upnl} USD\n"
+            f"└─ Tutup: /close {pid}"
         )
 
-    await update.message.reply_text("\n\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")

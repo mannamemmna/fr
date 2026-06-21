@@ -21,6 +21,7 @@ from core.automation_engine import AutomationEngine, AutoEvent
 from core.bg_scanner import start_bg_scanner
 
 from handlers import state
+from handlers.status import cmd_status
 from handlers.start import cmd_start
 from handlers.scan import cmd_scan
 from handlers.top import cmd_top
@@ -122,6 +123,7 @@ def main():
 
     # ── Handlers ──
     app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("scan", cmd_scan))
     app.add_handler(CommandHandler("top", cmd_top))
     app.add_handler(CommandHandler("execute", cmd_execute))
