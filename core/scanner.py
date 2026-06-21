@@ -1,7 +1,7 @@
 """Funding rate scanner — Bybit × KuCoin arbitrage opportunities.
 
 Pulls all USDT-margined perp funding rates from both venues in parallel,
-matches common symbols, and builds an opportunity list sorted by spread.
+matches common symbols, and builds an opportunity list sorted by delta (|\u0394|).
 
 Public API:
     run_scan()                  → dict (also written to data/opportunities.json)
@@ -118,7 +118,7 @@ def find_opportunities(bybit_rates: dict, kucoin_rates: dict) -> list[dict]:
             "kucoin_mark": k.mark_price,
         })
 
-    opps.sort(key=lambda o: o["spread_abs"], reverse=True)
+    opps.sort(key=lambda o: abs(o.get("delta_pct", 0)), reverse=True)
     return opps
 
 
