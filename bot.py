@@ -665,6 +665,17 @@ def main():
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("help", cmd_help))
 
+    # Error handler — catch Telegram API errors gracefully
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+        import telegram.error as _te
+        err = context.error
+        if isinstance(err, _te.Conflict):
+            log.warning("Telegram Conflict: another bot instance detected — this one will yield")
+        else:
+            log.error("Telegram error: %s", err, exc_info=err)
+
+    app.add_error_handler(error_handler)
+
     # Background scanner
     if AUTO_SCAN_INTERVAL > 0:
         global _bg_scanner_thread
@@ -678,7 +689,7 @@ def main():
         log.info("Auto-scan enabled: every %ds", AUTO_SCAN_INTERVAL)
 
     log.info("Bot polling started…")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
