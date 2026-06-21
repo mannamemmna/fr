@@ -79,23 +79,22 @@ def _format_opp(o: dict, rank: int = 0) -> str:
 # ─── Handlers ─────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    mode = "📄 *PAPER MODE*" if PAPER_MODE else "🔴 *LIVE MODE*"
+    mode = "📄 PAPER MODE" if PAPER_MODE else "🔴 LIVE MODE"
     msg = (
-        f"🤖 *FR Bot — Funding Rate Arbitrage*\n\n"
-        f"{mode}\n"
-        f"Exchanges: Bybit × KuCoin\n\n"
-        f"*Commands:*\n"
-        f"/scan — Trigger a fresh scan\n"
-        f"/top \\[n\\] — Show top N opportunities\n"
-        f"/execute `<symbol>` `<amount>` — Execute a trade\n"
-        f"/close `<position_id>` — Close a position\n"
-        f"/closeall — Close all open positions\n"
-        f"/portfolio — Show open positions\n"
-        f"/pnl — P&L summary\n"
-        f"/mode — Show current mode\n"
-        f"/auto — Auto trading on/off/status\n"
-        f"/health — Check exchange connectivity\n"
-        f"/help — This message"
+        f"*Funding Rate Arbitrage Bot*\n\n"
+        f"`{mode}`\n"
+        f"Set NOTIFY_CHAT_ID in .env for auto notifications\n\n"
+        f"| Command | Description |\n"
+        f"|---|---|\n"
+        f"| /scan | Scan all pairs |\n"
+        f"| /top | Top opportunities |\n"
+        f"| /execute SYM | Manual entry |\n"
+        f"| /portfolio | Positions + balances |\n"
+        f"| /closeall | Close all |\n"
+        f"| /pnl | P&L summary (1D/7D/30D) |\n"
+        f"| /health | Exchange status + ping |\n"
+        f"| /auto on/off/status | Auto trading |\n"
+        f"| /help | All commands |"
     )
     await update.message.reply_text(msg, parse_mode="Markdown")
 
@@ -302,10 +301,17 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔴 Live portfolio not yet implemented.")
         return
 
+    # Balance split: Bybit leg = KuCoin leg = total exposure
+    total_exposure = summary.get("total_exposure", 0)
+    bybit_balance = total_exposure
+    kucoin_balance = total_exposure
+
     if not positions:
         await update.message.reply_text(
             f"📭 *No open positions*\n\n"
             f"💰 Balance: `${summary['balance']:.2f}`\n"
+            f"🔹 Bybit Balance: `${bybit_balance:.2f}`\n"
+            f"🔸 KuCoin Balance: `${kucoin_balance:.2f}`\n"
             f"📊 Realized PnL: `{summary['realized_pnl']:+.2f}`\n"
             f"📈 Total PnL: `{summary['total_pnl']:+.2f}`",
             parse_mode="Markdown",
@@ -315,7 +321,9 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [
         f"*📊 PORTFOLIO*\n"
         f"💰 Balance: `${summary['balance']:.2f}`  "
-        f"Exposure: `${summary['total_exposure']:.2f}`\n"
+        f"Exposure: `${total_exposure:.2f}`\n"
+        f"🔹 Bybit Balance: `${bybit_balance:.2f}`  "
+        f"🔸 KuCoin Balance: `${kucoin_balance:.2f}`\n"
         f"📊 Realized: `{summary['realized_pnl']:+.2f}`  "
         f"Unrealized: `{summary['unrealized_pnl']:+.2f}`\n"
         f"📈 Total PnL: `{summary['total_pnl']:+.2f}`\n",
@@ -329,8 +337,30 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lev = p.get("leverage", "?")
         pos_size = p.get("position_size", margin)
         spread = p.get("entry_spread", "—")
-        entry_time = p.get("entry_time", "—")[:19]
         dir_str = f"{p['side_bybit'].upper()} BB / {p['side_kucoin'].upper()} KC"
+
+        # Entry prices
+        entry_bb = p.get("entry_price_bybit", 0)
+        entry_kc = p.get("entry_price_kucoin", 0)
+        entry_prices = f"BB: ${entry_bb:.4f} // KC: ${entry_kc:.4f}"
+
+        # Est. liquidation price
+        if p["side_bybit"] == "buy":
+            liq_bb = entry_bb * (1 - 1.0 / lev)
+        else:
+            liq_bb = entry_bb * (1 + 1.0 / lev)
+        if p["side_kucoin"] == "buy":
+            liq_kc = entry_kc * (1 - 1.0 / lev)
+        else:
+            liq_kc = entry_kc * (1 + 1.0 / lev)
+        liq_str = f"Liq: ${liq_bb:.4f}/${liq_kc:.4f}"
+
+        # Funding collected
+        funding = p.get("funding_pnl")
+        if funding is not None:
+            funding_str = f"Funding: `${funding:+.2f}`"
+        else:
+            funding_str = "Funding: ⌛ pending"
 
         # Compute unrealized PnL for this position
         opp = None
@@ -346,8 +376,6 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if opp:
             exit_bb = opp.get("bybit_mark") or opp.get("price", 0)
             exit_kc = opp.get("kucoin_mark") or opp.get("price", 0)
-            entry_bb = p.get("entry_price_bybit", 0)
-            entry_kc = p.get("entry_price_kucoin", 0)
             qty = p.get("quantity", 0)
             if p["side_bybit"] == "buy":
                 pnl_bb = qty * (exit_bb - entry_bb)
@@ -362,6 +390,8 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(
             f"`{pid}…` *{sym}* — Margin: `${margin:.0f}` × {lev}x = `${pos_size:.0f}`\n"
             f"  {dir_str}  |  Spread: `{spread}%`  |  uPnL: {upnl}\n"
+            f"  {entry_prices}\n"
+            f"  {liq_str}  |  {funding_str}\n"
             f"  _Close: /close {pid}_"
         )
 
@@ -373,11 +403,36 @@ async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔴 Live PnL not yet implemented.")
         return
 
+    from datetime import datetime, timezone, timedelta
+
     summary = paper_engine.get_summary()
     closed = paper_engine.get_closed_positions()
 
+    # Time-based PnL
+    now = datetime.now(timezone.utc)
+    pnl_1d = 0.0
+    pnl_7d = 0.0
+    pnl_30d = 0.0
+    for p in closed:
+        closed_at_str = p.get("exit_time") or p.get("closed_at", "")
+        if not closed_at_str:
+            continue
+        try:
+            closed_at = datetime.fromisoformat(closed_at_str.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            continue
+        rpnl = p.get("realized_pnl", 0)
+        delta = now - closed_at
+        if delta <= timedelta(days=1):
+            pnl_1d += rpnl
+        if delta <= timedelta(days=7):
+            pnl_7d += rpnl
+        if delta <= timedelta(days=30):
+            pnl_30d += rpnl
+
     lines = [
         f"*💰 P&L SUMMARY*\n",
+        f"📅 PnL 1D: `{pnl_1d:+.2f}` | 7D: `{pnl_7d:+.2f}` | 30D: `{pnl_30d:+.2f}`\n",
         f"Balance: `${summary['balance']:.2f}`  "
         f"(Initial: `${summary['initial_balance']:.2f}`)\n",
         f"Realized PnL: `{summary['realized_pnl']:+.2f} USD`\n"
@@ -392,7 +447,6 @@ async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for p in closed[-5:]:
             sym = p["symbol"]
             pnl = p.get("realized_pnl", 0)
-            spread = p.get("entry_spread", "—")
             total_fee = p.get("total_fee", 0)
             total_price_pnl = p.get("total_price_pnl", 0)
             funding = p.get("funding_pnl", 0)
@@ -483,7 +537,22 @@ async def cmd_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await cmd_start(update, context)
+    msg = (
+        "*AVAILABLE COMMANDS*\n\n"
+        "/scan — Scan all pairs for funding opportunities\n"
+        "/top [N] — Top N opportunities (default 10)\n"
+        "/execute SYM [amount] [leverage] — Execute paper trade\n"
+        "/close POS_ID — Close specific position\n"
+        "/closeall — Close all open positions\n"
+        "/portfolio — Balances + open positions\n"
+        "/pnl — P&L breakdown (1D, 7D, 30D)\n"
+        "/health — Exchange connectivity + ping latency\n"
+        "/mode — Show trading mode\n"
+        "/auto on|off|status — Auto trading engine\n"
+        "/start — Intro message\n"
+        "/help — This message"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 
 async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -493,10 +562,12 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = ["*🏥 EXCHANGE HEALTH*\n"]
     for name in ("bybit", "kucoin"):
         try:
+            t0 = time.time()
             client = __import__("exchanges", fromlist=["get_client"]).get_client(name)
             client.fetch_all_funding_rates()
+            latency = (time.time() - t0) * 1000
             exchange_health[name] = True
-            lines.append(f"🟢 *{name.upper()}* — OK")
+            lines.append(f"🟢 *{name.upper()}* — {latency:.0f}ms")
         except Exception as e:
             exchange_health[name] = False
             lines.append(f"🔴 *{name.upper()}* — DOWN: `{e}`")
