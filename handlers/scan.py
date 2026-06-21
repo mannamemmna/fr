@@ -6,7 +6,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from core.scanner import run_scan
-from handlers.state import last_scan
+import handlers.state as state
 
 
 def _format_opp(o: dict, rank: int = 0) -> str:
@@ -31,11 +31,10 @@ def _format_opp(o: dict, rank: int = 0) -> str:
 
 
 async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global last_scan
     msg = await update.message.reply_text("🔍 Scanning funding rates…")
     try:
         payload = run_scan()
-        last_scan = payload
+        state.last_scan = payload
         opps = payload["opportunities"]
         dur = payload["scan_duration"]
         bb = payload["bybit_count"]

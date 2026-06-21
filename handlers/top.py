@@ -8,11 +8,10 @@ from telegram.ext import ContextTypes
 from config import DEFAULT_TOP_N
 from core.scanner import read_opportunities
 from handlers.scan import _format_opp
-from handlers.state import last_scan
+import handlers.state as state
 
 
 async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global last_scan
     n = DEFAULT_TOP_N
     if context.args:
         try:
@@ -21,19 +20,19 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     n = max(1, min(n, 30))
 
-    if not last_scan:
-        last_scan = read_opportunities()
-    if not last_scan.get("opportunities"):
+    if not state.last_scan:
+        state.last_scan = read_opportunities()
+    if not state.last_scan.get("opportunities"):
         await update.message.reply_text("⚠️ No scan data yet. Run /scan first.")
         return
 
     # Sort by delta (absolute delta_pct) — biggest funding rate gap
     opps = sorted(
-        last_scan["opportunities"],
+        state.last_scan["opportunities"],
         key=lambda o: abs(o.get("delta_pct", 0)),
         reverse=True,
     )
-    ts = last_scan.get("timestamp", "unknown")
+    ts = state.last_scan.get("timestamp", "unknown")
     top = "\n\n".join(_format_opp(o, i + 1) for i, o in enumerate(opps[:n]))
 
     await update.message.reply_text(

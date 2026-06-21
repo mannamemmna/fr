@@ -105,12 +105,16 @@ def main():
     def _on_auto_event(event: AutoEvent, notify_chat_id: str | None = None):
         if not notify_chat_id:
             return
-        msg = f"🤖 *Auto* | `{event.type}`\\n{event.message}"
+        # Strip markdown to avoid parse errors from symbol names/prices containing special chars
+        import re as _re
+        raw = event.message if event.message else ""
+        plain = _re.sub(r"[*`_\[\]]", "", raw)
+        msg = f"🤖 Auto | {event.type}\n{plain}"
         import requests as _r
         try:
             _r.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": notify_chat_id, "text": msg, "parse_mode": "Markdown"},
+                json={"chat_id": notify_chat_id, "text": msg},
                 timeout=5,
             )
         except Exception:

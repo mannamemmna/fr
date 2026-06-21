@@ -5,30 +5,28 @@ from __future__ import annotations
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from handlers.state import auto_engine, _notify_chat_id
+import handlers.state as state
 
 
 async def cmd_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global auto_engine
-    if not auto_engine:
-        await update.message.reply_text("⚠️ Automation engine not initialized.")
+    if not state.auto_engine:
+        await update.message.reply_text("⚠️ Auto engine belum siap. Pastikan bot sudah berjalan dengan benar.")
         return
 
     if not context.args:
-        s = auto_engine.get_status()
+        s = state.auto_engine.get_status()
         st = "🟢 ON" if s["enabled"] else "🔴 OFF"
         extra = ""
         if s.get("delay"):
             d = s["delay"]
             extra = (
-                f"\n\n⏳ *Delay Order*\n"
-                f"Pair: *{d['symbol']}* | {d['side_bb'].upper()} BB / {d['side_kc'].upper()} KC\n"
-                f"Margin: `${d['amount']:.0f}` × {d['leverage']}x\n"
-                f"Price spread: `{d['spread']:+.4f}%` (BB–KC)  |  Delta: `{d['delta']:.4f}%`\n"
-                f"Stable: `{d['stable']}` | Age: {d['age_seconds']:.0f}s"
+                f"\n\n⏳ *Menunggu entry...*\n"
+                f"Pair: *{d['symbol']}* | {d['side_bb'].upper()} Bybit / {d['side_kc'].upper()} KuCoin\n"
+                f"Modal: `${d['amount']:.0f}` × {d['leverage']}x\n"
+                f"Delta FR: `{d['delta']:.4f}%` | Stabil: `{d['stable']}` checks"
             )
         if s.get("live_position"):
-            extra += f"\n\n📈 Live Position: `{s['live_position']}…`"
+            extra += f"\n\n📈 Posisi aktif: `{s['live_position'][:8]}...`"
 
         await update.message.reply_text(
             f"*🤖 AUTO ENGINE*\n\n"
@@ -41,19 +39,19 @@ async def cmd_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     cmd = context.args[0].lower()
     chat_id = str(update.effective_chat.id)
+
     if cmd == "on":
-        global _notify_chat_id
-        _notify_chat_id = chat_id
-        auto_engine.enable()
-        auto_engine.set_notify_chat(chat_id)
+        state._notify_chat_id = chat_id
+        state.auto_engine.enable()
+        state.auto_engine.set_notify_chat(chat_id)
         await update.message.reply_text(
-            f"🟢 *Auto mode ON* — engine akan scan & eksekusi otomatis\n"
-            f"_Chat ini didaftarkan untuk notifikasi_\n\n"
-            f"_Tip: set NOTIFY_CHAT_ID di .env biar notifikasi langsung jalan tanpa /auto on_",
+            f"🟢 *Auto mode ON*\n"
+            f"Bot akan scan & eksekusi otomatis setiap funding cycle.\n\n"
+            f"_Tip: set NOTIFY\\_CHAT\\_ID di .env supaya notifikasi langsung jalan tanpa /auto on_",
             parse_mode="Markdown",
         )
     elif cmd == "off":
-        auto_engine.disable()
-        await update.message.reply_text("🔴 *Auto mode OFF* — semua pending order dicancel", parse_mode="Markdown")
+        state.auto_engine.disable()
+        await update.message.reply_text("🔴 *Auto mode OFF* — tidak ada order baru.", parse_mode="Markdown")
     else:
-        await update.message.reply_text("Usage: /auto [on|off]", parse_mode="Markdown")
+        await update.message.reply_text("Cara pakai: /auto [on|off|status]")

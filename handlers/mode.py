@@ -6,13 +6,13 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import PAPER_MODE
-from handlers.state import paper_engine
+import handlers.state as state
 
 
 async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if PAPER_MODE:
-        bal = paper_engine.get_balance()
-        summ = paper_engine.get_summary()
+    if PAPER_MODE and state.paper_engine:
+        bal = state.paper_engine.get_balance()
+        summ = state.paper_engine.get_summary()
         await update.message.reply_text(
             f"📄 *PAPER MODE* _(simulated trading)_\n\n"
             f"Balance: `${bal:.2f} USDT`\n"

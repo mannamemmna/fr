@@ -1,24 +1,27 @@
-"""/execute — Manual paper trade execution."""
+"""/execute — Manual trade execution."""
 
 from __future__ import annotations
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import PAPER_MODE, DEFAULT_LEVERAGE
+from config import DEFAULT_LEVERAGE
 from core.scanner import read_opportunities
-from handlers.state import paper_engine, last_scan
+import handlers.state as state
 
 
 async def cmd_execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not state.paper_engine:
+        await update.message.reply_text("⚠️ Engine belum siap.")
+        return
+
     if not context.args or len(context.args) < 1:
         await update.message.reply_text(
-            "Usage: `/execute <symbol> <amount_usd> [leverage]`\n"
-            "Example: `/execute BTC 100` (default 2x)\n"
-            "Example: `/execute ETH 50 3` (3x leverage)\n\n"
-            "`amount_usd` = margin/collateral\n"
-            "`leverage` = 1–20x (position = margin × leverage)\n"
-            "Bot uses the direction from the latest scan automatically.",
+            "Cara pakai: `/execute <symbol> <modal_usd> [leverage]`\n"
+            "Contoh: `/execute BTC 100` (default 2x)\n"
+            "Contoh: `/execute ETH 50 3` (3x leverage)\n\n"
+            "`modal_usd` = jaminan yang dipakai\n"
+            "`leverage` = 1-20x (posisi = modal × leverage)",
             parse_mode="Markdown",
         )
         return
@@ -31,59 +34,52 @@ async def cmd_execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             amount = float(context.args[1])
         except ValueError:
-            await update.message.reply_text(f"Invalid amount: {context.args[1]}")
+            await update.message.reply_text(f"Modal tidak valid: {context.args[1]}")
             return
     if len(context.args) > 2:
         try:
-            leverage = int(context.args[2])
-            leverage = max(1, min(leverage, 20))
+            leverage = max(1, min(int(context.args[2]), 20))
         except ValueError:
-            await update.message.reply_text(f"Invalid leverage: {context.args[2]}")
+            await update.message.reply_text(f"Leverage tidak valid: {context.args[2]}")
             return
 
-    global last_scan
-    if not last_scan:
-        last_scan = read_opportunities()
+    if not state.last_scan:
+        state.last_scan = read_opportunities()
 
-    opp = None
-    for o in last_scan.get("opportunities", []):
-        if o["symbol"].upper() == symbol:
-            opp = o
-            break
-
+    opp = next((o for o in state.last_scan.get("opportunities", []) if o["symbol"].upper() == symbol), None)
     if not opp:
         await update.message.reply_text(
-            f"❌ Symbol `{symbol}` not found in latest scan. Run /scan first.",
+            f"❌ Simbol `{symbol}` tidak ada di scan terbaru. Jalankan /scan dulu.",
             parse_mode="Markdown",
         )
         return
 
     bybit_action = opp["bybit_action"]
-    kucoin_action = opp["kucoin_action"]
     if bybit_action == "—":
-        await update.message.reply_text(f"⚠️ Spread is flat for {symbol}, no trade.")
+        await update.message.reply_text(f"⚠️ Selisih FR flat untuk {symbol}, tidak ada trade.")
         return
 
     side_bb = "sell" if bybit_action == "SHORT" else "buy"
-    side_kc = "sell" if kucoin_action == "SHORT" else "buy"
+    side_kc = "sell" if opp["kucoin_action"] == "SHORT" else "buy"
 
-    result = paper_engine.execute_instant(symbol, amount, side_bb, side_kc, leverage)
+    result = state.paper_engine.execute_instant(symbol, amount, side_bb, side_kc, leverage)
 
     if result["status"] == "done":
         pos = result.get("position", {})
         lev = pos.get("leverage", leverage)
         pos_size = pos.get("position_size", amount * leverage)
+        dir_text = "Jual Bybit/Beli KuCoin" if side_bb == "sell" else "Beli Bybit/Jual KuCoin"
         await update.message.reply_text(
-            f"✅ *Order executed!*\n\n"
-            f"ID: `{result['task_id'][:12]}…`\n"
-            f"Symbol: *{symbol}*\n"
-            f"Margin: `${amount:.0f}` × {lev}x = `${pos_size:.0f}` position\n"
-            f"Direction: {opp['direction']}\n"
-            f"Spread: `{opp['spread_pct']:+.4f}%`\n"
-            f"APR: `{opp['annual_pct']:+.1f}%`\n\n"
-            f"Bal: `${paper_engine.get_balance():.2f}`",
+            f"✅ *Posisi dibuka!*\n\n"
+            f"ID: `{result['task_id'][:12]}`\n"
+            f"Simbol: *{symbol}*\n"
+            f"Modal: `${amount:.0f}` × {lev}x = `${pos_size:.0f}`\n"
+            f"Arah: {dir_text}\n"
+            f"Selisih FR: `{opp.get('spread_pct', 0):+.4f}%`\n"
+            f"Estimasi APR: `{opp.get('annual_pct', 0):+.1f}%`\n\n"
+            f"Saldo: `${state.paper_engine.get_balance():.2f}`",
             parse_mode="Markdown",
         )
     else:
         errors = "\n".join(result.get("errors", ["unknown"]))
-        await update.message.reply_text(f"❌ Failed:\n{errors}")
+        await update.message.reply_text(f"❌ Gagal:\n{errors}")

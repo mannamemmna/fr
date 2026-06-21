@@ -5,14 +5,16 @@ from __future__ import annotations
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import PAPER_MODE
 from core.scanner import read_opportunities
-from handlers.state import paper_engine, last_scan
+import handlers.state as state
 
 
 async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global last_scan
-    summary = paper_engine.get_summary()
+    if not state.paper_engine:
+        await update.message.reply_text("⚠️ Engine belum siap. Coba lagi sebentar.")
+        return
+
+    summary = state.paper_engine.get_summary()
     positions = summary["positions"]
 
     balance = summary.get("balance", 0)
@@ -43,11 +45,15 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "",
     ]
 
+    opps = state.last_scan.get("opportunities", [])
+    if not opps:
+        opps = read_opportunities().get("opportunities", [])
+
     for p in positions:
         pid = p["id"][:8]
         sym = p["symbol"]
         margin = p["amount_usd"]
-        lev = p.get("leverage", "?")
+        lev = p.get("leverage", 1)
         pos_size = margin * lev
         spread = p.get("entry_spread", "—")
         side_bb = p["side_bybit"].upper()
@@ -55,53 +61,35 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         entry_bb = p.get("entry_price_bybit", 0)
         entry_kc = p.get("entry_price_kucoin", 0)
 
-        # Direction explanation
-        if side_bb == "SELL":
-            dir_explain = f"Jual di Bybit / Beli di KuCoin"
+        dir_explain = "Jual di Bybit / Beli di KuCoin" if side_bb == "SELL" else "Beli di Bybit / Jual di KuCoin"
+        price_label = f"Entry: Bybit `${entry_bb:.4f}` | KuCoin `${entry_kc:.4f}`"
+
+        if lev and lev > 0:
+            liq_bb = entry_bb * (1 + 1.0 / lev) if side_bb == "SELL" else entry_bb * (1 - 1.0 / lev)
+            liq_kc = entry_kc * (1 + 1.0 / lev) if side_kc == "SELL" else entry_kc * (1 - 1.0 / lev)
+            liq_label = f"Likuidasi: Bybit ~`${liq_bb:.4f}` / KuCoin ~`${liq_kc:.4f}`"
         else:
-            dir_explain = f"Beli di Bybit / Jual di KuCoin"
+            liq_label = "Likuidasi: —"
 
-        # Entry price label
-        price_label = f"Entry: Bybit ${entry_bb:.4f} | KuCoin ${entry_kc:.4f}"
-
-        # Liq price
-        if side_bb == "BUY":  # Long
-            liq_bb = entry_bb * (1 - 1.0 / lev)
-        else:  # Short
-            liq_bb = entry_bb * (1 + 1.0 / lev)
-        if side_kc == "BUY":
-            liq_kc = entry_kc * (1 - 1.0 / lev)
-        else:
-            liq_kc = entry_kc * (1 + 1.0 / lev)
-        liq_label = f"Likuidasi: Bybit ~${liq_bb:.4f} / KuCoin ~${liq_kc:.4f}"
-
-        # Funding
         funding = p.get("funding_pnl")
-        if funding is not None:
-            funding_label = f"Funding diterima: `{funding:+.2f}` USD"
-        else:
-            funding_label = "Funding: ⌛ menunggu pembayaran"
+        funding_label = (
+            f"Funding diterima: `{funding:+.2f}` USD"
+            if funding is not None
+            else "Funding: ⌛ menunggu pembayaran"
+        )
 
-        # uPnL
         upnl = "—"
-        if not last_scan:
-            last_scan = read_opportunities()
-        for o in last_scan.get("opportunities", []):
+        for o in opps:
             if o["symbol"].upper() == sym.upper():
                 exit_bb = o.get("bybit_mark") or 0
                 exit_kc = o.get("kucoin_mark") or 0
                 qty = p.get("quantity", 0)
-                if side_bb == "BUY":
-                    pnl_bb = qty * (exit_bb - entry_bb)
-                else:
-                    pnl_bb = qty * (entry_bb - exit_bb)
-                if side_kc == "BUY":
-                    pnl_kc = qty * (exit_kc - entry_kc)
-                else:
-                    pnl_kc = qty * (entry_kc - exit_kc)
+                pnl_bb = qty * (entry_bb - exit_bb) if side_bb == "SELL" else qty * (exit_bb - entry_bb)
+                pnl_kc = qty * (entry_kc - exit_kc) if side_kc == "SELL" else qty * (exit_kc - entry_kc)
                 upnl = f"`{(pnl_bb + pnl_kc):+.2f}`"
                 break
 
+        spread_str = f"{spread}%" if isinstance(spread, float) else str(spread)
         lines.append(
             f"🪙 *{sym}* `{pid}`\n"
             f"├─ Margin: `${margin:.0f}` × {lev}x = *${pos_size:.0f}*\n"
@@ -109,7 +97,7 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"├─ {price_label}\n"
             f"├─ {liq_label}\n"
             f"├─ {funding_label}\n"
-            f"├─ Selisih FR saat entry: `{spread}%`\n"
+            f"├─ Selisih FR saat entry: `{spread_str}`\n"
             f"├─ Profit/Loss saat ini: {upnl} USD\n"
             f"└─ Tutup: /close {pid}"
         )

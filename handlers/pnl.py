@@ -6,17 +6,19 @@ from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from handlers.state import paper_engine
+import handlers.state as state
 
 
 async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    summary = paper_engine.get_summary()
-    closed = paper_engine.get_closed_positions()
+    if not state.paper_engine:
+        await update.message.reply_text("⚠️ Engine belum siap.")
+        return
+
+    summary = state.paper_engine.get_summary()
+    closed = state.paper_engine.get_closed_positions()
 
     now = datetime.now(timezone.utc)
-    pnl_1d = 0.0
-    pnl_7d = 0.0
-    pnl_30d = 0.0
+    pnl_1d = pnl_7d = pnl_30d = 0.0
     for p in closed:
         closed_at_str = p.get("exit_time") or p.get("closed_at", "")
         if not closed_at_str:
@@ -35,30 +37,28 @@ async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pnl_30d += rpnl
 
     lines = [
-        f"*💰 P&L SUMMARY*\n",
-        f"📅 PnL 1D: `{pnl_1d:+.2f}` | 7D: `{pnl_7d:+.2f}` | 30D: `{pnl_30d:+.2f}`\n",
-        f"Balance: `${summary['balance']:.2f}`\n",
-        f"Realized PnL: `{summary['realized_pnl']:+.2f} USD`\n"
-        f"Unrealized PnL: `{summary['unrealized_pnl']:+.2f} USD`\n"
+        "*💰 P&L SUMMARY*\n",
+        f"📅 1 Hari: `{pnl_1d:+.2f}` | 7 Hari: `{pnl_7d:+.2f}` | 30 Hari: `{pnl_30d:+.2f}`\n",
+        f"Saldo: `${summary['balance']:.2f}`\n",
+        f"Sudah direalisasi: `{summary['realized_pnl']:+.2f} USD`\n"
+        f"Belum direalisasi: `{summary['unrealized_pnl']:+.2f} USD`\n"
         f"Total PnL: `{summary['total_pnl']:+.2f} USD`\n",
-        f"Fees paid: `{summary['total_fees']:.2f} USD`\n"
-        f"Est. Funding earned: `{summary['total_funding_pnl']:.2f} USD`\n",
+        f"Total biaya: `{summary['total_fees']:.2f} USD`\n"
+        f"Est. funding diterima: `{summary['total_funding_pnl']:.2f} USD`\n",
     ]
 
     if closed:
-        lines.append("*Last 5 closed trades:*")
+        lines.append("*5 Trade Terakhir:*")
         for p in closed[-5:]:
             sym = p["symbol"]
             pnl = p.get("realized_pnl", 0)
             total_fee = p.get("total_fee", 0)
-            total_price_pnl = p.get("total_price_pnl", 0)
+            price_pnl = p.get("total_price_pnl", 0)
             funding = p.get("funding_pnl", 0)
             sign = "✅" if pnl >= 0 else "❌"
             lines.append(
                 f"{sign} *{sym}*  PnL: `{pnl:+.2f}`  "
-                f"(Price: `{total_price_pnl:+.2f}` "
-                f"Funding: `{funding:+.2f}` "
-                f"Fees: `-{total_fee:.2f}`)"
+                f"(Harga: `{price_pnl:+.2f}` | Funding: `{funding:+.2f}` | Fee: `{total_fee:.2f}`)"
             )
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
