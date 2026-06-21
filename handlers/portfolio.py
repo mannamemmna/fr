@@ -12,12 +12,8 @@ from handlers.state import paper_engine, last_scan
 
 async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global last_scan
-    if PAPER_MODE:
-        summary = paper_engine.get_summary()
-        positions = summary["positions"]
-    else:
-        await update.message.reply_text("🔴 Live portfolio belum tersedia.")
-        return
+    summary = paper_engine.get_summary()
+    positions = summary["positions"]
 
     balance = summary.get("balance", 0)
     total_pnl = summary.get("total_pnl", 0)

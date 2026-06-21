@@ -6,15 +6,10 @@ from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import PAPER_MODE
 from handlers.state import paper_engine
 
 
 async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not PAPER_MODE:
-        await update.message.reply_text("🔴 Live PnL not yet implemented.")
-        return
-
     summary = paper_engine.get_summary()
     closed = paper_engine.get_closed_positions()
 
@@ -42,8 +37,7 @@ async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [
         f"*💰 P&L SUMMARY*\n",
         f"📅 PnL 1D: `{pnl_1d:+.2f}` | 7D: `{pnl_7d:+.2f}` | 30D: `{pnl_30d:+.2f}`\n",
-        f"Balance: `${summary['balance']:.2f}`  "
-        f"(Initial: `${summary['initial_balance']:.2f}`)\n",
+        f"Balance: `${summary['balance']:.2f}`\n",
         f"Realized PnL: `{summary['realized_pnl']:+.2f} USD`\n"
         f"Unrealized PnL: `{summary['unrealized_pnl']:+.2f} USD`\n"
         f"Total PnL: `{summary['total_pnl']:+.2f} USD`\n",

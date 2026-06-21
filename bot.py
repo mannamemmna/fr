@@ -17,6 +17,7 @@ from config import (
     AUTO_CLOSE_ON_RESTART,
 )
 from core.paper_engine import PaperEngine
+from core.live_engine import LiveEngine, LiveModeLockedError, MissingLiveCredentialsError
 from core.automation_engine import AutomationEngine, AutoEvent
 from core.bg_scanner import start_bg_scanner
 
@@ -55,7 +56,11 @@ def main():
     if PAPER_MODE:
         state.paper_engine = PaperEngine()
     else:
-        state.paper_engine = None
+        try:
+            state.paper_engine = LiveEngine()
+        except (LiveModeLockedError, MissingLiveCredentialsError) as e:
+            log.error("❌ Live mode refused: %s", e)
+            return 1
 
     # 🛡️ Restart check
     if PAPER_MODE and state.paper_engine:
@@ -111,7 +116,7 @@ def main():
         except Exception:
             log.debug("Cannot send auto event to %s", notify_chat_id)
 
-    if PAPER_MODE and state.paper_engine:
+    if state.paper_engine:
         state.auto_engine = AutomationEngine(state.paper_engine, event_callback=_on_auto_event)
         state.auto_engine.start()
         if NOTIFY_CHAT_ID:

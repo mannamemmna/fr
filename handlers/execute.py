@@ -67,11 +67,7 @@ async def cmd_execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     side_bb = "sell" if bybit_action == "SHORT" else "buy"
     side_kc = "sell" if kucoin_action == "SHORT" else "buy"
 
-    if PAPER_MODE:
-        result = paper_engine.execute_instant(symbol, amount, side_bb, side_kc, leverage)
-    else:
-        await update.message.reply_text("🔴 Live execution not yet implemented. Stay tuned!")
-        return
+    result = paper_engine.execute_instant(symbol, amount, side_bb, side_kc, leverage)
 
     if result["status"] == "done":
         pos = result.get("position", {})

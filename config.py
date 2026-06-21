@@ -30,6 +30,9 @@ BYBIT_API_KEY: str = os.getenv("BYBIT_API_KEY", "")
 BYBIT_API_SECRET: str = os.getenv("BYBIT_API_SECRET", "")
 KUCOIN_API_KEY: str = os.getenv("KUCOIN_API_KEY", "")
 KUCOIN_API_SECRET: str = os.getenv("KUCOIN_API_SECRET", "")
+KUCOIN_API_PASSPHRASE: str = os.getenv("KUCOIN_API_PASSPHRASE", "")
+# Double-confirmation guard for real orders. Required when PAPER_MODE=false.
+LIVE_CONFIRM: bool = os.getenv("LIVE_CONFIRM", "false").lower() in ("true", "1", "yes")
 
 # ─── Auto-scan ───
 # NOTE: auto_engine does its own scanning; this is for the background scanner

@@ -18,11 +18,7 @@ async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     pos_id = context.args[0]
-    if PAPER_MODE:
-        result = paper_engine.close_position(pos_id)
-    else:
-        await update.message.reply_text("🔴 Live close not yet implemented.")
-        return
+    result = paper_engine.close_position(pos_id)
 
     if result.get("ok"):
         await update.message.reply_text(
@@ -41,10 +37,6 @@ async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_closeall(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not PAPER_MODE:
-        await update.message.reply_text("🔴 Live closeall not yet implemented.")
-        return
-
     positions = paper_engine.get_open_positions()
     if not positions:
         await update.message.reply_text("📭 No open positions.")

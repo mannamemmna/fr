@@ -19,7 +19,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = "📄 Paper" if PAPER_MODE else "🔴 Live"
 
     # ── Balance ──
-    if PAPER_MODE and paper_engine:
+    if paper_engine:
         summary = paper_engine.get_summary()
         balance = summary.get("balance", 0)
         total_pnl = summary.get("total_pnl", 0)
