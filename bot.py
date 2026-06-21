@@ -99,11 +99,13 @@ def main():
     def _on_auto_event(event: AutoEvent, notify_chat_id: str | None = None):
         if not notify_chat_id:
             return
-        msg = f"🤖 *Auto* | `{event.type}`\n{event.message}"
+        msg = f"🤖 *Auto* | `{event.type}`\\n{event.message}"
+        import requests as _r
         try:
-            asyncio.run_coroutine_threadsafe(
-                app.bot.send_message(chat_id=notify_chat_id, text=msg, parse_mode="Markdown"),
-                app.loop,
+            _r.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": notify_chat_id, "text": msg, "parse_mode": "Markdown"},
+                timeout=5,
             )
         except Exception:
             log.debug("Cannot send auto event to %s", notify_chat_id)
@@ -143,7 +145,7 @@ def main():
     app.add_error_handler(error_handler)
 
     if AUTO_SCAN_INTERVAL > 0:
-        start_bg_scanner(app)
+        start_bg_scanner()
 
     log.info("Bot polling started…")
     app.run_polling(drop_pending_updates=True)

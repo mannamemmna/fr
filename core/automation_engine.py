@@ -351,29 +351,10 @@ class AutomationEngine:
         candidates.sort(key=_score, reverse=True)
         best = candidates[0]
 
-        # Check Bybit 1H × KuCoin 4H rule
+        # Check Bybit 1H × KuCoin 4H rule: both directions supported now.
+        # The scanner already maps direction correctly (bybit_action/kucoin_action).
         bb_iv = best.get("bybit_interval_h", 0) or 0
         kc_iv = best.get("kucoin_interval_h", 0) or 0
-        bb_rate = best.get("bybit_rate_pct", 0) or 0
-        kc_rate = best.get("kucoin_rate_pct", 0) or 0
-
-        if bb_iv == 1 and kc_iv >= 4:
-            # Only enter if Bybit FR > KuCoin
-            if bb_rate <= kc_rate:
-                log.info(
-                    "SKIP %s: Bybit 1H (%.4f%%) ≤ KuCoin %dH (%.4f%%) — waiting for KuCoin window",
-                    best["symbol"], bb_rate, kc_iv, kc_rate,
-                )
-                # Try next candidate
-                for alt in candidates[1:]:
-                    alt_bb_iv = alt.get("bybit_interval_h", 0) or 0
-                    alt_kc_iv = alt.get("kucoin_interval_h", 0) or 0
-                    if not (alt_bb_iv == 1 and alt_kc_iv >= 4):
-                        best = alt
-                        break
-                else:
-                    # All candidates are 1H/4H with Bybit not higher — wait
-                    return
 
         # Validate direction
         bybit_action = best.get("bybit_action", "—")
@@ -481,7 +462,7 @@ class AutomationEngine:
         fund_spread_now = current.get("spread_pct", 0)
 
         # Reversal: funding delta dropped significantly (opportunity evaporating)
-        delta_dropped = curr_delta < entry_delta * 0.3  # Lost 70%+ of delta
+        delta_dropped = abs(curr_delta) < abs(entry_delta) * 0.3  # Lost 70%+ of delta magnitude
 
         # Reversal: price spread flipped sign (hedge no longer favorable)
         entry_ps = order.entry_price_spread
@@ -611,11 +592,11 @@ class AutomationEngine:
             entry_spread < 0 and current_spread > AUTO_REVERSAL_THRESHOLD
         )
 
-        # Also check delta drop
+        # Also check delta drop (absolute, handles both directions)
         current_delta = current.get("delta_pct", 0) or 0
         delay_order = self._delay_order
         entry_delta = delay_order.entry_delta if delay_order else current_delta
-        delta_collapsed = current_delta < 0.01
+        delta_collapsed = abs(current_delta) < 0.01
 
         if spread_flipped or delta_collapsed:
             # Auto close!
