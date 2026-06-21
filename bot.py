@@ -20,6 +20,7 @@ from core.paper_engine import PaperEngine
 from core.live_engine import LiveEngine, LiveModeLockedError, MissingLiveCredentialsError
 from core.automation_engine import AutomationEngine, AutoEvent
 from core.bg_scanner import start_bg_scanner
+from core.scheduler import register_jobs
 
 from handlers import state
 from handlers.status import cmd_status
@@ -157,6 +158,9 @@ def main():
 
     if AUTO_SCAN_INTERVAL > 0:
         start_bg_scanner()
+
+    # Built-in scheduled notifications (daily summary, health alerts, startup ping)
+    register_jobs(app)
 
     log.info("Bot polling started…")
     app.run_polling(drop_pending_updates=True)

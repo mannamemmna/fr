@@ -14,16 +14,22 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bal = state.paper_engine.get_balance()
         summ = state.paper_engine.get_summary()
         await update.message.reply_text(
-            f"📄 *PAPER MODE* _(simulated trading)_\n\n"
-            f"Balance: `${bal:.2f} USDT`\n"
-            f"Open positions: {summ['open_positions']}\n"
-            f"Realized PnL: `{summ['realized_pnl']:+.2f}`\n"
-            f"Total PnL: `{summ['total_pnl']:+.2f}`\n\n"
-            f"_Set PAPER_MODE=false in .env to switch to live trading._",
-            parse_mode="Markdown",
+            f"📄 PAPER MODE (Simulasi)\n\n"
+            f"Saldo: ${bal:.2f} USDT\n"
+            f"Posisi terbuka: {summ['open_positions']}\n"
+            f"PnL direalisasi: {summ['realized_pnl']:+.2f}\n"
+            f"Total PnL: {summ['total_pnl']:+.2f}\n\n"
+            f"Untuk live: set PAPER_MODE=false + LIVE_CONFIRM=true di .env",
+        )
+    elif not PAPER_MODE and state.paper_engine:
+        summ = state.paper_engine.get_summary()
+        await update.message.reply_text(
+            f"🔴 LIVE MODE (Dana Real)\n\n"
+            f"Saldo Bybit: ${summ.get('bybit_balance', 0):.2f}\n"
+            f"Saldo KuCoin: ${summ.get('kucoin_balance', 0):.2f}\n"
+            f"Total: ${summ.get('balance', 0):.2f}\n"
+            f"Posisi terbuka: {summ['open_positions']}\n"
+            f"PnL: {summ['total_pnl']:+.2f}",
         )
     else:
-        await update.message.reply_text(
-            "🔴 *LIVE MODE*\n\n_Trading with real exchange credentials._",
-            parse_mode="Markdown",
-        )
+        await update.message.reply_text("Engine belum siap.")
