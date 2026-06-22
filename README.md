@@ -1,6 +1,8 @@
 # FR Bot — Bybit × KuCoin Funding Rate Arbitrage
 
-Telegram bot untuk scan funding-rate arbitrage Bybit vs KuCoin, paper trading, automation 30 menit sebelum funding, dan **live account mode** dengan guard `LIVE_CONFIRM=true`.
+Bot Telegram otomatis (Delta Neutral Arbitrage) yang mencari selisih *Funding Rate* antara Bybit dan KuCoin. Bot akan melakukan **Short** pada pair yang harganya lebih mahal / funding rate-nya tinggi, dan **Long** pada pair yang lebih murah / funding rate-nya rendah. Tujuannya adalah menangkap profit bebas risiko dari pembayaran funding fee sambil meminimalkan kerugian dari selisih harga (Price Spread).
+
+Bot mendukung **Paper Trading Mode** (simulasi) dan **Live Account Mode** (dengan guard berlapis untuk keamanan dana).
 
 > ⚠️ Live mode memakai dana real. Test paper mode dulu. Jangan aktifkan live kalau belum paham risiko partial fill, liquidation, API permission, dan network failure.
 
