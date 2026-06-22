@@ -35,7 +35,6 @@ from config import (
     AUTO_MAX_POSITIONS,
     AUTO_MONITOR_INTERVAL,
     AUTO_ENTRY_WINDOW_MIN,
-    AUTO_DELAY_CHECKS,
     AUTO_PREFER_SAME_INTERVAL,
     AUTO_PRICE_SPREAD_MAX_DRIFT,
     AUTO_DELAY_CANCEL_PRICE_SPREAD, AUTO_DELAY_CANCEL_FUNDING_DIFF,
@@ -683,7 +682,6 @@ class AutomationEngine:
                 "leverage": do.leverage,
                 "spread": do.entry_price_spread,
                 "delta": do.entry_delta,
-                "stable": f"{do.stable_checks}/{AUTO_DELAY_CHECKS}",
                 "age_seconds": round(time.time() - do.created_at, 1),
             }
 
