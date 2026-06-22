@@ -237,7 +237,7 @@ class PaperEngine:
         """Close a paper position and compute realized PnL."""
         with self._lock:
             pos = next(
-                (p for p in self._positions if p.get("id") == position_id),
+                (p for p in self._positions if p.get("id", "").startswith(position_id)),
                 None,
             )
             if not pos:
