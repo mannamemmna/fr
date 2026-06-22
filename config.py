@@ -48,7 +48,6 @@ AUTO_BALANCE_PER_LEG: float = float(os.getenv("AUTO_BALANCE_PER_LEG", "1000"))
 AUTO_MAX_POSITIONS: int = int(os.getenv("AUTO_MAX_POSITIONS", "1"))
 AUTO_MONITOR_INTERVAL: float = float(os.getenv("AUTO_MONITOR_INTERVAL", "0.5"))
 AUTO_ENTRY_WINDOW_MIN: int = int(os.getenv("AUTO_ENTRY_WINDOW_MIN", "30"))
-AUTO_DELTA_THRESHOLD: float = float(os.getenv("AUTO_DELTA_THRESHOLD", "0.3"))
 AUTO_DELAY_CHECKS: int = int(os.getenv("AUTO_DELAY_CHECKS", "10"))
 
 # Threshold Reversal & Exit (Automation Rules)

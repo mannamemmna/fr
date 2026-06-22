@@ -35,7 +35,6 @@ from config import (
     AUTO_MAX_POSITIONS,
     AUTO_MONITOR_INTERVAL,
     AUTO_ENTRY_WINDOW_MIN,
-    AUTO_DELTA_THRESHOLD,
     AUTO_DELAY_CHECKS,
     AUTO_PREFER_SAME_INTERVAL,
     AUTO_PRICE_SPREAD_MAX_DRIFT,
@@ -331,8 +330,6 @@ class AutomationEngine:
             kc_ts = opp.get("kucoin_next_ts", 0) or 0
             min_ts = min(bb_ts, kc_ts)
             if min_ts <= 0 or min_ts - now > window_sec:
-                continue
-            if opp["delta_pct"] < AUTO_DELTA_THRESHOLD:
                 continue
             candidates.append(opp)
 
