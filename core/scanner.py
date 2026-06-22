@@ -35,20 +35,19 @@ def find_opportunities(bybit_rates: dict, kucoin_rates: dict) -> list[dict]:
         k = kucoin_rates[sym]
 
         bb_r, kc_r = b.funding_rate, k.funding_rate
-        spread = bb_r - kc_r
-        spread_abs = abs(spread)
+        raw_fr_diff = bb_r - kc_r
 
         bb_per_day = 24 / max(b.interval_hours, 1)
         kc_per_day = 24 / max(k.interval_hours, 1)
         per_day = (bb_per_day + kc_per_day) / 2
 
-        net_daily = spread_abs * per_day
+        net_daily = abs(raw_fr_diff) * per_day
         annual = net_daily * 365
 
-        if spread > 0:
+        if raw_fr_diff > 0:
             direction = "SHORT Bybit / LONG KuCoin"
             bybit_action, kucoin_action = "SHORT", "LONG"
-        elif spread < 0:
+        elif raw_fr_diff < 0:
             direction = "SHORT KuCoin / LONG Bybit"
             bybit_action, kucoin_action = "LONG", "SHORT"
         else:
@@ -56,6 +55,15 @@ def find_opportunities(bybit_rates: dict, kucoin_rates: dict) -> list[dict]:
             bybit_action, kucoin_action = "—", "—"
 
         price = k.mark_price or b.mark_price or k.index_price or b.index_price
+
+        bb_mark = b.mark_price or b.index_price or 0
+        kc_mark = k.mark_price or k.index_price or 0
+        price_spread = 0.0
+        if bb_mark > 0 and kc_mark > 0:
+            p_short = bb_mark if bybit_action == "SHORT" else kc_mark
+            p_long = kc_mark if kucoin_action == "LONG" else bb_mark
+            if p_short > 0:
+                price_spread = ((p_long - p_short) / p_short) * 100.0
 
         bb_next_ts = (b.funding_next_time // 1000) if b.funding_next_time else None
         kc_next_ts = (k.funding_next_time // 1000) if k.funding_next_time else None
@@ -96,8 +104,9 @@ def find_opportunities(bybit_rates: dict, kucoin_rates: dict) -> list[dict]:
         opps.append({
             "symbol": base,
             "unified_symbol": sym,
-            "spread_pct": round(spread * 100, 6),
-            "spread_abs": round(spread_abs * 100, 6),
+            "spread_pct": round(price_spread, 6),
+            "spread_abs": round(abs(price_spread), 6),
+            "raw_fr_diff": round(raw_fr_diff * 100, 6),
             "funding_diff_pct": funding_diff_pct,
             "delta_pct": funding_diff_pct,  # keep for backwards compatibility if needed, but we'll use funding_diff_pct
             "diff_daily_pct": diff_daily_pct,
@@ -123,8 +132,8 @@ def find_opportunities(bybit_rates: dict, kucoin_rates: dict) -> list[dict]:
             "kucoin_next_time": _fmt_wib(kc_next_ts),
             "bybit_raw": b.raw_symbol,
             "kucoin_raw": k.raw_symbol,
-            "bybit_mark": b.mark_price,
-            "kucoin_mark": k.mark_price,
+            "bybit_mark": bb_mark,
+            "kucoin_mark": kc_mark,
         })
 
     opps.sort(key=lambda o: o.get("funding_diff_pct", 0), reverse=True)

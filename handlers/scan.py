@@ -24,7 +24,7 @@ def _format_opp(o: dict, rank: int = 0) -> str:
     emoji = "🟢" if apr > 500 else "🟡" if apr > 200 else "⚪"
     return (
         f"{emoji} *{prefix}{symbol}*  |  APR: `{apr:+.1f}%`\n"
-        f"   Diff: `{funding_diff:.4f}%`  |  Spread: `{pos}{spread:.4f}%`\n"
+        f"   Diff: `{funding_diff:.4f}%`  |  Price Spread: `{pos}{spread:.4f}%`\n"
         f"   {dir_short}\n"
         f"   BB: `{bb_rate:+.4f}%` ({bb_time})  KC: `{kc_rate:+.4f}%` ({kc_time})"
     )

@@ -97,7 +97,7 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"├─ {price_label}\n"
             f"├─ {liq_label}\n"
             f"├─ {funding_label}\n"
-            f"├─ Selisih FR saat entry: `{spread_str}`\n"
+            f"├─ Price Spread saat entry: `{spread_str}`\n"
             f"├─ Profit/Loss saat ini: {upnl} USD\n"
             f"└─ Tutup: /close {pid}"
         )

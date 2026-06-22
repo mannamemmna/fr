@@ -135,9 +135,8 @@ def _format_trade_summary(result: dict, symbol: str, entry_spread: float,
         f"*Position:* `${amount_usd:.0f}` × {leverage}x = `${position_size:.0f}`",
         f"*Direction:* {side_bb} Bybit / {side_kc} KuCoin",
         f"",
-        f"━━━ *SPREAD* ━━━",
-        f"Entry: `{entry_spread:+.4f}%` → Exit: `{current_spread:+.4f}%`",
-        f"Delta: `{entry_delta:.4f}%` → `{current_delta:.4f}%`",
+        f"━━━ *FUNDING* ━━━",
+        f"Diff FR: `{entry_delta:.4f}%` → `{current_delta:.4f}%`",
         f"",
         f"━━━ *PRICE* ━━━",
         f"Bybit: `{entry_price_bb}` → `{exit_price_bb}`",
@@ -396,7 +395,7 @@ class AutomationEngine:
         self._state = State.DELAY
         log.info(
             "LOOKING → DELAY: %s  spread=%.4f%%  delta=%.4f%%  %s  BB_iv=%dh  KC_iv=%dh",
-            best["symbol"], best["spread_pct"], best["delta_pct"],
+            best["symbol"], (best.get("raw_fr_diff", 0) / 100.0), best["delta_pct"],
             best["direction"], bb_iv, kc_iv,
         )
         self._emit_event(
@@ -404,7 +403,7 @@ class AutomationEngine:
             (
                 f"⏳ *DELAY ORDER*\\n"
                 f"Pair: *{best['symbol']}*\\n"
-                f"Funding: `{best['spread_pct']:+.4f}%`  |  Diff FR: `{best['delta_pct']:.4f}%`\n"
+                f"Funding: `{(best.get('raw_fr_diff', 0)/100):+.4f}%`  |  Diff FR: `{best['delta_pct']:.4f}%`\n"
                 f"Price spread: `{price_spread:+.4f}%` ((Long-Short)/Short)\\n"
                 f"Direction: {best['direction']}\\n"
                 f"Interval: BB {bb_iv}h / KC {kc_iv}h\\n"
@@ -470,7 +469,7 @@ class AutomationEngine:
         # Also check funding reversal (for early cancel)
         curr_delta = current["delta_pct"]
         entry_delta = order.entry_delta
-        fund_spread_now = current.get("spread_pct", 0)
+        fund_spread_now = current.get("raw_fr_diff", 0) / 100.0  # Optional monitoring info
 
         # Reversal: funding delta dropped to <= configured threshold
         delta_dropped = abs(curr_delta) <= AUTO_DELAY_CANCEL_FUNDING_DIFF
@@ -552,7 +551,7 @@ class AutomationEngine:
                     f"Pair: *{order.symbol}*\\n"
                     f"Margin: `${order.amount_usd:.0f}` × {order.leverage}x = `${pos.get('position_size', order.amount_usd * order.leverage):.0f}`\\n"
                     f"Price spread: `{order.entry_price_spread:+.4f}%` ((Long-Short)/Short)\\n"
-                    f"Funding: `{current['spread_pct']:+.4f}%`  |  Diff FR: `{current['delta_pct']:.4f}%`\n"
+                    f"Funding: `{(current.get('raw_fr_diff', 0)/100):+.4f}%`  |  Diff FR: `{current['delta_pct']:.4f}%`\n"
                     f"Direction: {current['direction']}\\n"
                     f"⏰ Funding in: {mins_left:.0f}min\\n"
                     f"_Monitoring reversal every {AUTO_MONITOR_INTERVAL}s…_"
