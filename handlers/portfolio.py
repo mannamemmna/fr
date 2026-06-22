@@ -71,16 +71,14 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             liq_label = "Likuidasi: —"
 
-        funding = p.get("funding_pnl")
-        funding_label = (
-            f"Funding diterima: `{funding:+.2f}` USD"
-            if funding is not None
-            else "Funding: ⌛ menunggu pembayaran"
-        )
-
+        funding = p.get("funding_pnl", 0.0)
+        
+        # Ambil jam next payment dari data scan
+        next_funding_jam = "—"
         upnl = "—"
         for o in opps:
             if o["symbol"].upper() == sym.upper():
+                next_funding_jam = o.get("next_funding", "—")
                 exit_bb = o.get("bybit_mark") or 0
                 exit_kc = o.get("kucoin_mark") or 0
                 qty = p.get("quantity", 0)
@@ -88,6 +86,8 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 pnl_kc = qty * (entry_kc - exit_kc) if side_kc == "SELL" else qty * (exit_kc - entry_kc)
                 upnl = f"`{(pnl_bb + pnl_kc):+.2f}`"
                 break
+
+        funding_label = f"Funding: ⌛ Next payment {next_funding_jam} | Diterima: `{funding:+.2f}` USD"
 
         spread_str = f"{spread}%" if isinstance(spread, float) else str(spread)
         lines.append(

@@ -41,17 +41,24 @@ AUTO_SCAN_INTERVAL: int = int(os.getenv("AUTO_SCAN_INTERVAL", 60))
 # ─── Leverage ───
 DEFAULT_LEVERAGE: int = int(os.getenv("DEFAULT_LEVERAGE", "2"))
 
-# ─── Automation ───
-AUTO_MODE: bool = os.getenv("AUTO_MODE", "false").lower() in ("true", "1", "yes")
+# ─── Automation Config ───
+AUTO_MODE: bool = str(os.getenv("AUTO_MODE", "false")).lower() == "true"
 AUTO_LEVERAGE: int = int(os.getenv("AUTO_LEVERAGE", "3"))
-AUTO_BALANCE_PER_LEG: float = float(os.getenv("AUTO_BALANCE_PER_LEG", "100"))
+AUTO_BALANCE_PER_LEG: float = float(os.getenv("AUTO_BALANCE_PER_LEG", "1000"))
 AUTO_MAX_POSITIONS: int = int(os.getenv("AUTO_MAX_POSITIONS", "1"))
 AUTO_MONITOR_INTERVAL: float = float(os.getenv("AUTO_MONITOR_INTERVAL", "0.5"))
 AUTO_ENTRY_WINDOW_MIN: int = int(os.getenv("AUTO_ENTRY_WINDOW_MIN", "30"))
-AUTO_DELTA_THRESHOLD: float = float(os.getenv("AUTO_DELTA_THRESHOLD", "0.01"))
-AUTO_REVERSAL_THRESHOLD: float = float(os.getenv("AUTO_REVERSAL_THRESHOLD", "0.0"))
-AUTO_DELAY_CHECKS: int = int(os.getenv("AUTO_DELAY_CHECKS", "6"))
-# Max price spread drift during delay (absolute %). 0.05% = stable hedge
+AUTO_DELTA_THRESHOLD: float = float(os.getenv("AUTO_DELTA_THRESHOLD", "0.3"))
+AUTO_DELAY_CHECKS: int = int(os.getenv("AUTO_DELAY_CHECKS", "10"))
+
+# Threshold Reversal & Exit (Automation Rules)
+AUTO_DELAY_CANCEL_PRICE_SPREAD: float = float(os.getenv("AUTO_DELAY_CANCEL_PRICE_SPREAD", "0.05"))
+AUTO_DELAY_CANCEL_FUNDING_DIFF: float = float(os.getenv("AUTO_DELAY_CANCEL_FUNDING_DIFF", "0.2"))
+
+AUTO_LIVE_CLOSE_FUNDING_DIFF: float = float(os.getenv("AUTO_LIVE_CLOSE_FUNDING_DIFF", "0.05"))
+AUTO_LIVE_CLOSE_PRICE_SPREAD: float = float(os.getenv("AUTO_LIVE_CLOSE_PRICE_SPREAD", "0.0"))
+
+AUTO_PRICE_SPREAD_MAX_DRIFT: float = float(os.getenv("AUTO_PRICE_SPREAD_MAX_DRIFT", "0.1"))
 AUTO_PRICE_SPREAD_MAX_DRIFT: float = float(os.getenv("AUTO_PRICE_SPREAD_MAX_DRIFT", "0.05"))
 AUTO_PREFER_SAME_INTERVAL: bool = os.getenv("AUTO_PREFER_SAME_INTERVAL", "true").lower() in ("true", "1", "yes")
 # Auto-close all open paper positions on bot restart (prevents unmonitored floating)

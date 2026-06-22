@@ -40,11 +40,20 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bb = payload["bybit_count"]
         kc = payload["kucoin_count"]
         common = payload["common_count"]
-        top5 = "\n\n".join(_format_opp(o, i + 1) for i, o in enumerate(opps[:5]))
+        # Sort Top 5 by Funding Diff
+        top_diff = sorted(opps, key=lambda o: o.get("funding_diff_pct", 0), reverse=True)[:5]
+        top_diff_str = "\n\n".join(_format_opp(o, i + 1) for i, o in enumerate(top_diff))
+
+        # Sort Top 5 by APR
+        top_apr = sorted(opps, key=lambda o: o.get("annual_pct", 0), reverse=True)[:5]
+        top_apr_str = "\n\n".join(_format_opp(o, i + 1) for i, o in enumerate(top_apr))
+
         await msg.edit_text(
             f"✅ *Scan complete in {dur:.1f}s*\n"
             f"Bybit: {bb} pairs | KuCoin: {kc} pairs | Common: {common}\n\n"
-            f"*🏆 TOP 5 BY SPREAD*\n\n{top5}",
+            f"*🏆 TOP 5 BY FUNDING DIFF*\n\n{top_diff_str}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"*🔥 TOP 5 BY APR*\n\n{top_apr_str}",
             parse_mode="Markdown",
         )
     except Exception as e:

@@ -36,10 +36,11 @@ from config import (
     AUTO_MONITOR_INTERVAL,
     AUTO_ENTRY_WINDOW_MIN,
     AUTO_DELTA_THRESHOLD,
-    AUTO_REVERSAL_THRESHOLD,
     AUTO_DELAY_CHECKS,
     AUTO_PREFER_SAME_INTERVAL,
     AUTO_PRICE_SPREAD_MAX_DRIFT,
+    AUTO_DELAY_CANCEL_PRICE_SPREAD, AUTO_DELAY_CANCEL_FUNDING_DIFF,
+    AUTO_LIVE_CLOSE_FUNDING_DIFF, AUTO_LIVE_CLOSE_PRICE_SPREAD,
     PAPER_MODE,
 )
 from core.scanner import run_scan, read_opportunities
@@ -365,10 +366,15 @@ class AutomationEngine:
         side_bb = "sell" if bybit_action == "SHORT" else "buy"
         side_kc = "sell" if best.get("kucoin_action") == "SHORT" else "buy"
 
-        # Calculate price spread (mark price diff %)
+        # Calculate price spread ((P_Long - P_Short) / P_Short * 100)
         bb_mark = best.get("bybit_mark", 0) or 0
         kc_mark = best.get("kucoin_mark", 0) or 0
-        price_spread = ((bb_mark - kc_mark) / kc_mark * 100) if kc_mark > 0 else 0.0
+        if bb_mark <= 0 or kc_mark <= 0:
+            price_spread = 0.0
+        else:
+            p_short = bb_mark if side_bb == "sell" else kc_mark
+            p_long = kc_mark if side_kc == "buy" else bb_mark
+            price_spread = ((p_long - p_short) / p_short) * 100.0
 
         # Create delay order
         self._delay_order = DelayOrder(
@@ -399,7 +405,7 @@ class AutomationEngine:
                 f"⏳ *DELAY ORDER*\\n"
                 f"Pair: *{best['symbol']}*\\n"
                 f"Funding: `{best['spread_pct']:+.4f}%`  |  Diff FR: `{best['delta_pct']:.4f}%`\n"
-                f"Price spread: `{price_spread:+.4f}%` (BB–KC mark)\\n"
+                f"Price spread: `{price_spread:+.4f}%` ((Long-Short)/Short)\\n"
                 f"Direction: {best['direction']}\\n"
                 f"Interval: BB {bb_iv}h / KC {kc_iv}h\\n"
                 f"Size: `${AUTO_BALANCE_PER_LEG:.0f}` × {AUTO_LEVERAGE}x = `${AUTO_BALANCE_PER_LEG * AUTO_LEVERAGE:.0f}` per leg\\n"
@@ -451,22 +457,27 @@ class AutomationEngine:
                 log.warning("DELAY → LOOKING: %s disappeared from scan", order.symbol)
                 return
 
-        # Calculate current PRICE spread (BB mark vs KC mark %)
+        # Calculate current PRICE spread ((P_Long - P_Short) / P_Short * 100)
         bb_mark = current.get("bybit_mark", 0) or 0
         kc_mark = current.get("kucoin_mark", 0) or 0
-        price_spread_now = ((bb_mark - kc_mark) / kc_mark * 100) if kc_mark > 0 else 0.0
+        if bb_mark <= 0 or kc_mark <= 0:
+            price_spread_now = 0.0
+        else:
+            p_short = bb_mark if order.side_bybit == "sell" else kc_mark
+            p_long = kc_mark if order.side_kucoin == "buy" else bb_mark
+            price_spread_now = ((p_long - p_short) / p_short) * 100.0
 
         # Also check funding reversal (for early cancel)
         curr_delta = current["delta_pct"]
         entry_delta = order.entry_delta
         fund_spread_now = current.get("spread_pct", 0)
 
-        # Reversal: funding delta dropped significantly (opportunity evaporating)
-        delta_dropped = abs(curr_delta) < abs(entry_delta) * 0.3  # Lost 70%+ of delta magnitude
+        # Reversal: funding delta dropped to <= configured threshold
+        delta_dropped = abs(curr_delta) <= AUTO_DELAY_CANCEL_FUNDING_DIFF
 
-        # Reversal: price spread flipped sign (hedge no longer favorable)
+        # Reversal: price spread > 0 is bad for entry (Long asset more expensive than Short asset)
         entry_ps = order.entry_price_spread
-        price_flipped = (entry_ps > 0.1 and price_spread_now < -0.1) or (entry_ps < -0.1 and price_spread_now > 0.1)
+        price_flipped = price_spread_now > AUTO_DELAY_CANCEL_PRICE_SPREAD
 
         if delta_dropped or price_flipped:
             reason = "funding delta dropped" if delta_dropped else "price spread flipped"
@@ -540,7 +551,7 @@ class AutomationEngine:
                     f"✅ *AUTO ENTRY*\\n"
                     f"Pair: *{order.symbol}*\\n"
                     f"Margin: `${order.amount_usd:.0f}` × {order.leverage}x = `${pos.get('position_size', order.amount_usd * order.leverage):.0f}`\\n"
-                    f"Price spread: `{order.entry_price_spread:+.4f}%` (BB–KC mark)\\n"
+                    f"Price spread: `{order.entry_price_spread:+.4f}%` ((Long-Short)/Short)\\n"
                     f"Funding: `{current['spread_pct']:+.4f}%`  |  Diff FR: `{current['delta_pct']:.4f}%`\n"
                     f"Direction: {current['direction']}\\n"
                     f"⏰ Funding in: {mins_left:.0f}min\\n"
@@ -585,25 +596,29 @@ class AutomationEngine:
         if not current:
             return  # No data yet, keep monitoring
 
-        # Check funding reversal
+        # 1. Hitung Price Spread: ((P_Long - P_Short) / P_Short * 100)
+        bb_mark = current.get("bybit_mark", 0) or 0
+        kc_mark = current.get("kucoin_mark", 0) or 0
+        if bb_mark <= 0 or kc_mark <= 0:
+            price_spread_now = 0.0
+        else:
+            p_short = bb_mark if pos.get("side_bybit", "").upper() == "SELL" else kc_mark
+            p_long = kc_mark if pos.get("side_kucoin", "").upper() == "BUY" else bb_mark
+            price_spread_now = ((p_long - p_short) / p_short) * 100.0
+
+        # 2. Ambil kondisi entry & current (untuk laporan summary)
         entry_spread = pos.get("entry_spread", 0) or 0
         current_spread = current.get("spread_pct", 0) or 0
-        spread_flipped = (entry_spread > 0 and current_spread < -AUTO_REVERSAL_THRESHOLD) or (
-            entry_spread < 0 and current_spread > AUTO_REVERSAL_THRESHOLD
-        )
 
-        # Also check delta drop (absolute, handles both directions)
         current_delta = current.get("delta_pct", 0) or 0
         delay_order = self._delay_order
         entry_delta = delay_order.entry_delta if delay_order else current_delta
-        delta_collapsed = abs(current_delta) < 0.01
 
-        if spread_flipped or delta_collapsed:
-            # Auto close!
+        # 3. EXIT RULE: Funding Diff <= Config DAN Price Spread <= Config
+        if abs(current_delta) <= AUTO_LIVE_CLOSE_FUNDING_DIFF and price_spread_now <= AUTO_LIVE_CLOSE_PRICE_SPREAD:
             log.info(
-                "LIVE → CLOSE: reversal detected for %s  spread %+.4f→%+.4f  delta %.4f→%.4f",
-                symbol, entry_spread, current_spread,
-                entry_delta, current_delta,
+                "LIVE → CLOSE: Exit criteria met for %s! Diff FR: %.4f%%, Price Spread: %.4f%%",
+                symbol, current_delta, price_spread_now
             )
 
             if PAPER_MODE:
