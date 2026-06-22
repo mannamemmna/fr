@@ -398,7 +398,7 @@ class AutomationEngine:
             (
                 f"⏳ *DELAY ORDER*\\n"
                 f"Pair: *{best['symbol']}*\\n"
-                f"Funding: `{best['spread_pct']:+.4f}%`  |  Delta: `{best['delta_pct']:.4f}%`\\n"
+                f"Funding: `{best['spread_pct']:+.4f}%`  |  Diff FR: `{best['delta_pct']:.4f}%`\n"
                 f"Price spread: `{price_spread:+.4f}%` (BB–KC mark)\\n"
                 f"Direction: {best['direction']}\\n"
                 f"Interval: BB {bb_iv}h / KC {kc_iv}h\\n"
@@ -541,7 +541,7 @@ class AutomationEngine:
                     f"Pair: *{order.symbol}*\\n"
                     f"Margin: `${order.amount_usd:.0f}` × {order.leverage}x = `${pos.get('position_size', order.amount_usd * order.leverage):.0f}`\\n"
                     f"Price spread: `{order.entry_price_spread:+.4f}%` (BB–KC mark)\\n"
-                    f"Funding: `{current['spread_pct']:+.4f}%`  |  Delta: `{current['delta_pct']:.4f}%`\\n"
+                    f"Funding: `{current['spread_pct']:+.4f}%`  |  Diff FR: `{current['delta_pct']:.4f}%`\n"
                     f"Direction: {current['direction']}\\n"
                     f"⏰ Funding in: {mins_left:.0f}min\\n"
                     f"_Monitoring reversal every {AUTO_MONITOR_INTERVAL}s…_"

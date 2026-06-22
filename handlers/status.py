@@ -44,7 +44,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             d = eng["delay"]
             eng_detail = (
                 f"🔸 Pair: *{d['symbol']}*  |  {d['side_bb'].upper()}/{d['side_kc'].upper()}\n"
-                f"🔸 Delta: `{d['delta']:.4f}%`  |  Stabil: {d['stable']} checks\n"
+                f"🔸 Diff FR: `{d.get('funding_diff', d.get('delta', 0)):.4f}%`  |  Stabil: {d['stable']} checks\n"
                 f"🔸 Modal: ${d['amount']:.0f} × {d['leverage']}x"
             )
         elif eng.get("live_position"):

@@ -1,4 +1,4 @@
-"""/top — Show top N by delta (FR high − FR low)."""
+"""/top — Show top N by funding difference."""
 
 from __future__ import annotations
 
@@ -26,16 +26,16 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ No scan data yet. Run /scan first.")
         return
 
-    # Sort by delta (absolute delta_pct) — biggest funding rate gap
+    # Sort by funding_diff_pct
     opps = sorted(
         state.last_scan["opportunities"],
-        key=lambda o: abs(o.get("delta_pct", 0)),
+        key=lambda o: o.get("funding_diff_pct", 0),
         reverse=True,
     )
     ts = state.last_scan.get("timestamp", "unknown")
     top = "\n\n".join(_format_opp(o, i + 1) for i, o in enumerate(opps[:n]))
 
     await update.message.reply_text(
-        f"*🏆 TOP {n} BY DELTA*\n_Scan: {ts}_\n\n{top}",
+        f"*🏆 TOP {n} BY FUNDING DIFF*\n_Scan: {ts}_\n\n{top}",
         parse_mode="Markdown",
     )

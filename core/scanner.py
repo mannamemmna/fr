@@ -78,20 +78,29 @@ def find_opportunities(bybit_rates: dict, kucoin_rates: dict) -> list[dict]:
         np_spread = b.next_payment_rate - k.next_payment_rate
         base = sym.split("/")[0]
 
-        # Delta (net FR) — always positive, flippable
-        raw_delta = (bb_r + kc_r) * 100
-        delta_pct = round(abs(raw_delta), 6)
-        delta_daily_pct = round(abs((bb_r + kc_r) * ((bb_per_day + kc_per_day) / 2)) * 100, 4)
-        delta_side = "BB+KC" if raw_delta > 0 else "KC+BB"
+        # Funding Difference (normalized by max interval)
+        max_interval = max(b.interval_hours, k.interval_hours, 1)
+        # Normalize FR to max_interval so they are comparable
+        # e.g., BB 1h (0.01%), KC 4h (0.03%)
+        # -> BB norm = 0.01% * (4/1) = 0.04%
+        # -> KC norm = 0.03% * (4/4) = 0.03%
+        # -> Raw Diff = 0.04% - 0.03% = +0.01% (per 4h)
+        bb_norm = bb_r * (max_interval / max(b.interval_hours, 1))
+        kc_norm = kc_r * (max_interval / max(k.interval_hours, 1))
+        
+        raw_diff = bb_norm - kc_norm
+        funding_diff_pct = round(abs(raw_diff) * 100, 6)
+        # Net daily is simply the raw diff extrapolated to 24h
+        diff_daily_pct = round(abs(raw_diff) * (24 / max_interval) * 100, 4)
 
         opps.append({
             "symbol": base,
             "unified_symbol": sym,
             "spread_pct": round(spread * 100, 6),
             "spread_abs": round(spread_abs * 100, 6),
-            "delta_pct": delta_pct,
-            "delta_daily_pct": delta_daily_pct,
-            "delta_side": delta_side,
+            "funding_diff_pct": funding_diff_pct,
+            "delta_pct": funding_diff_pct,  # keep for backwards compatibility if needed, but we'll use funding_diff_pct
+            "diff_daily_pct": diff_daily_pct,
             "next_payment_spread_pct": round(np_spread * 100, 6),
             "bybit_rate_pct": round(bb_r * 100, 6),
             "kucoin_rate_pct": round(kc_r * 100, 6),
@@ -118,7 +127,7 @@ def find_opportunities(bybit_rates: dict, kucoin_rates: dict) -> list[dict]:
             "kucoin_mark": k.mark_price,
         })
 
-    opps.sort(key=lambda o: abs(o.get("delta_pct", 0)), reverse=True)
+    opps.sort(key=lambda o: o.get("funding_diff_pct", 0), reverse=True)
     return opps
 
 

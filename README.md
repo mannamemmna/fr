@@ -42,7 +42,7 @@ LIVE_CONFIRM=false
 PAPER_INITIAL_BALANCE=10000
 
 AUTO_MODE=false
-AUTO_SCAN_INTERVAL=300
+AUTO_SCAN_INTERVAL=60
 ```
 
 Paper mode tidak butuh API key exchange.

@@ -15,7 +15,7 @@ def _format_opp(o: dict, rank: int = 0) -> str:
     spread = o["spread_pct"]
     dir_short = o["direction"]
     apr = o["annual_pct"]
-    delta = o.get("delta_pct", 0)
+    funding_diff = o.get("funding_diff_pct", 0)
     bb_rate = o.get("bybit_rate_pct", 0)
     kc_rate = o.get("kucoin_rate_pct", 0)
     bb_time = o.get("bybit_next_time", "—")
@@ -24,7 +24,7 @@ def _format_opp(o: dict, rank: int = 0) -> str:
     emoji = "🟢" if apr > 500 else "🟡" if apr > 200 else "⚪"
     return (
         f"{emoji} *{prefix}{symbol}*  |  APR: `{apr:+.1f}%`\n"
-        f"   Spread: `{pos}{spread:.4f}%`  |  Δ NET: `{delta:.4f}%`\n"
+        f"   Diff: `{funding_diff:.4f}%`  |  Spread: `{pos}{spread:.4f}%`\n"
         f"   {dir_short}\n"
         f"   BB: `{bb_rate:+.4f}%` ({bb_time})  KC: `{kc_rate:+.4f}%` ({kc_time})"
     )

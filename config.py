@@ -36,7 +36,7 @@ LIVE_CONFIRM: bool = os.getenv("LIVE_CONFIRM", "false").lower() in ("true", "1",
 
 # ─── Auto-scan ───
 # NOTE: auto_engine does its own scanning; this is for the background scanner
-AUTO_SCAN_INTERVAL: int = int(os.getenv("AUTO_SCAN_INTERVAL", "300"))
+AUTO_SCAN_INTERVAL: int = int(os.getenv("AUTO_SCAN_INTERVAL", 60))
 
 # ─── Leverage ───
 DEFAULT_LEVERAGE: int = int(os.getenv("DEFAULT_LEVERAGE", "2"))
