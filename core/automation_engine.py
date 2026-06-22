@@ -394,19 +394,34 @@ class AutomationEngine:
             best["symbol"], (best.get("raw_fr_diff", 0) / 100.0), best["delta_pct"],
             best["direction"], bb_iv, kc_iv,
         )
+        import datetime
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        wib_tz = datetime.timezone(datetime.timedelta(hours=7))
+        now_wib = now_dt.astimezone(wib_tz)
+
+        # Assuming funding times are typically top of the hour or similar
+        # If best has 'bybit_next_ts', let's format it to WIB
+        bb_ts = best.get("bybit_next_ts", 0)
+        kc_ts = best.get("kucoin_next_ts", 0)
+        min_ts = min(bb_ts, kc_ts) if bb_ts and kc_ts else (bb_ts or kc_ts)
+        
+        funding_in = "N/A"
+        if min_ts:
+            diff_sec = max(0, min_ts - now)
+            mins_left = diff_sec // 60
+            funding_in = f"{int(mins_left)} menit"
+
         self._emit_event(
             "state_change",
             (
-                f"🎯 *TARGET LOCKED*\n"
+                f"✅ *AUTO ENTRY*\n"
                 f"Pair: *{best['symbol']}*\n"
-                f"Direction: `{best['direction']}`\n\n"
-                f"📊 *Stats:*\n"
-                f"├ Diff FR: `{best['delta_pct']:.4f}%` (Raw: `{(best.get('raw_fr_diff', 0)/100):+.4f}%`)\n"
-                f"├ Price Spread: `{price_spread:+.4f}%`\n"
-                f"└ Interval: `BB {bb_iv}h / KC {kc_iv}h`\n\n"
-                f"💰 *Position:*\n"
-                f"└ `${AUTO_BALANCE_PER_LEG:.0f}` × `{AUTO_LEVERAGE}x` = `${AUTO_BALANCE_PER_LEG * AUTO_LEVERAGE:.0f}` per leg\n\n"
-                f"⚡ _Evaluating market condition..._"
+                f"Margin: `${AUTO_BALANCE_PER_LEG:.0f}` × `{AUTO_LEVERAGE}x` = `${AUTO_BALANCE_PER_LEG * AUTO_LEVERAGE:.0f}`\n"
+                f"Price spread: `{price_spread:+.4f}%` ((Long-Short)/Short)\n"
+                f"Funding: `{(best.get('raw_fr_diff', 0)/100):+.4f}%`  |  Diff FR: `{best['delta_pct']:.4f}%`\n"
+                f"Direction: `{best['direction']}`\n"
+                f"⏰ Funding in: `{funding_in}` (WIB)\n"
+                f"⚡ _Monitoring market every {AUTO_MONITOR_INTERVAL}s…_"
             ),
         )
 
@@ -527,14 +542,14 @@ class AutomationEngine:
             self._emit_event(
                 "entry",
                 (
-                    f"✅ *AUTO ENTRY*\\n"
-                    f"Pair: *{order.symbol}*\\n"
-                    f"Margin: `${order.amount_usd:.0f}` × {order.leverage}x = `${pos.get('position_size', order.amount_usd * order.leverage):.0f}`\\n"
-                    f"Price spread: `{order.entry_price_spread:+.4f}%` ((Long-Short)/Short)\\n"
+                    f"✅ *AUTO ENTRY*\n"
+                    f"Pair: *{order.symbol}*\n"
+                    f"Margin: `${order.amount_usd:.0f}` × `{order.leverage}x` = `${pos.get('position_size', order.amount_usd * order.leverage):.0f}`\n"
+                    f"Price spread: `{order.entry_price_spread:+.4f}%` ((Long-Short)/Short)\n"
                     f"Funding: `{(current.get('raw_fr_diff', 0)/100):+.4f}%`  |  Diff FR: `{current['delta_pct']:.4f}%`\n"
-                    f"Direction: {current['direction']}\\n"
-                    f"⏰ Funding in: {mins_left:.0f}min\\n"
-                    f"_Monitoring reversal every {AUTO_MONITOR_INTERVAL}s…_"
+                    f"Direction: `{current['direction']}`\n"
+                    f"⏰ Funding in: `{mins_left:.0f} menit` (WIB)\n"
+                    f"⚡ _Monitoring market every {AUTO_MONITOR_INTERVAL}s…_"
                 ),
             )
         else:
