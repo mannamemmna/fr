@@ -483,36 +483,18 @@ class AutomationEngine:
             )
             self._emit_event(
                 "cancel",
-                f"🔄 *Reversal!* {order.symbol} — cancelling delay\\n"
-                f"*{reason}*\\n"
-                f"Price spread: `{entry_ps:+.4f}%` → `{price_spread_now:+.4f}%`\\n"
-                f"Funding delta: `{entry_delta:.4f}%` → `{curr_delta:.4f}%`\\n"
+                f"🔄 *Reversal!* {order.symbol} — cancelling delay\n"
+                f"*{reason}*\n"
+                f"Price spread: `{entry_ps:+.4f}%` → `{price_spread_now:+.4f}%`\n"
+                f"Funding delta: `{entry_delta:.4f}%` → `{curr_delta:.4f}%`\n"
                 f"_Scanning for another pair…_",
             )
             self._delay_order = None
             self._state = State.LOOKING
             return
 
-        # Check stability: price spread hasn't moved beyond threshold
-        ps_change = abs(price_spread_now - entry_ps)
-        if ps_change < AUTO_PRICE_SPREAD_MAX_DRIFT:
-            order.stable_checks += 1
-        else:
-            order.stable_checks = max(0, order.stable_checks - 1)
-
-        if order.stable_checks >= AUTO_DELAY_CHECKS:
-            # Execute!
-            log.info(
-                "DELAY → EXECUTE: %s stable after %d checks (price_spread=%.4f%%, drift=%.4f)",
-                order.symbol, order.stable_checks, price_spread_now, ps_change,
-            )
-            self._execute_delay_order(order, current, time_left)
-        else:
-            log.debug(
-                "DELAY %s: stable=%d/%d  price_spread=%.4f%% (drift %.4f)  fund=%.4f%%  left=%.0fs",
-                order.symbol, order.stable_checks, AUTO_DELAY_CHECKS,
-                price_spread_now, ps_change, fund_spread_now, time_left,
-            )
+        # Lolos pengecekan, eksekusi saat itu juga tanpa penundaan (delay checks dihapus)
+        self._execute_delay_order(order, current, time_left)
 
     # ─── EXECUTE ────────────────────────────────────────────────────────
 
