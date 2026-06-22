@@ -398,14 +398,16 @@ class AutomationEngine:
         self._emit_event(
             "state_change",
             (
-                f"⏳ *DELAY ORDER*\\n"
-                f"Pair: *{best['symbol']}*\\n"
-                f"Funding: `{(best.get('raw_fr_diff', 0)/100):+.4f}%`  |  Diff FR: `{best['delta_pct']:.4f}%`\n"
-                f"Price spread: `{price_spread:+.4f}%` ((Long-Short)/Short)\\n"
-                f"Direction: {best['direction']}\\n"
-                f"Interval: BB {bb_iv}h / KC {kc_iv}h\\n"
-                f"Size: `${AUTO_BALANCE_PER_LEG:.0f}` × {AUTO_LEVERAGE}x = `${AUTO_BALANCE_PER_LEG * AUTO_LEVERAGE:.0f}` per leg\\n"
-                f"Monitoring price spread every {AUTO_MONITOR_INTERVAL}s…"
+                f"🎯 *TARGET LOCKED*\n"
+                f"Pair: *{best['symbol']}*\n"
+                f"Direction: `{best['direction']}`\n\n"
+                f"📊 *Stats:*\n"
+                f"├ Diff FR: `{best['delta_pct']:.4f}%` (Raw: `{(best.get('raw_fr_diff', 0)/100):+.4f}%`)\n"
+                f"├ Price Spread: `{price_spread:+.4f}%`\n"
+                f"└ Interval: `BB {bb_iv}h / KC {kc_iv}h`\n\n"
+                f"💰 *Position:*\n"
+                f"└ `${AUTO_BALANCE_PER_LEG:.0f}` × `{AUTO_LEVERAGE}x` = `${AUTO_BALANCE_PER_LEG * AUTO_LEVERAGE:.0f}` per leg\n\n"
+                f"⚡ _Evaluating market condition..._"
             ),
         )
 
@@ -483,11 +485,11 @@ class AutomationEngine:
             )
             self._emit_event(
                 "cancel",
-                f"🔄 *Reversal!* {order.symbol} — cancelling delay\n"
-                f"*{reason}*\n"
-                f"Price spread: `{entry_ps:+.4f}%` → `{price_spread_now:+.4f}%`\n"
-                f"Funding delta: `{entry_delta:.4f}%` → `{curr_delta:.4f}%`\n"
-                f"_Scanning for another pair…_",
+                f"🚫 *ENTRY CANCELLED* | {order.symbol}\n\n"
+                f"⚠️ *Reason:* {reason}\n"
+                f"├ Price spread: `{entry_ps:+.4f}%` ➡️ `{price_spread_now:+.4f}%`\n"
+                f"└ Diff FR: `{entry_delta:.4f}%` ➡️ `{curr_delta:.4f}%`\n\n"
+                f"🔄 _Back to scanning…_"
             )
             self._delay_order = None
             self._state = State.LOOKING
