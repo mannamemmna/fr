@@ -35,9 +35,11 @@ from config import (
     AUTO_MAX_POSITIONS,
     AUTO_MONITOR_INTERVAL,
     AUTO_ENTRY_WINDOW_MIN,
+    AUTO_DELTA_THRESHOLD,
     AUTO_PREFER_SAME_INTERVAL,
     AUTO_PRICE_SPREAD_MAX_DRIFT,
-    AUTO_DELAY_CANCEL_PRICE_SPREAD, AUTO_DELAY_CANCEL_FUNDING_DIFF,
+    AUTO_DELAY_CANCEL_FUNDING_DIFF,
+    AUTO_DELAY_ENTRY_PRICE_SPREAD,
     AUTO_LIVE_CLOSE_FUNDING_DIFF, AUTO_LIVE_CLOSE_PRICE_SPREAD,
     PAPER_MODE,
 )
@@ -173,8 +175,10 @@ class AutomationEngine:
         self._notify_chat_id: Optional[str] = None
 
         # Current state data
-        self._delay_order: Optional[DelayOrder] = None
+        self._delay_orders: List[DelayOrder] = []   # list pending delay orders (multi-position support)
+        self._delay_order: Optional[DelayOrder] = None  # backward compat alias (first in list)
         self._live_position_id: Optional[str] = None
+        self._funding_threshold_met: bool = False   # Tahap 1 LIVE: sudah terpenuhi?
         self._last_scan: dict = {}
         self._last_log = time.time()
 
@@ -321,7 +325,7 @@ class AutomationEngine:
         if not scan:
             return
 
-        # Filter: pairs within funding window
+        # Filter: pairs within funding window AND min Diff FR >= AUTO_DELTA_THRESHOLD
         window_sec = AUTO_ENTRY_WINDOW_MIN * 60
         candidates = []
         for opp in scan:
@@ -329,6 +333,8 @@ class AutomationEngine:
             kc_ts = opp.get("kucoin_next_ts", 0) or 0
             min_ts = min(bb_ts, kc_ts)
             if min_ts <= 0 or min_ts - now > window_sec:
+                continue
+            if opp["delta_pct"] < AUTO_DELTA_THRESHOLD:
                 continue
             candidates.append(opp)
 
@@ -345,172 +351,183 @@ class AutomationEngine:
             return opp["delta_pct"] + same_interval_bonus
 
         candidates.sort(key=_score, reverse=True)
-        best = candidates[0]
 
-        # Check Bybit 1H × KuCoin 4H rule: both directions supported now.
-        # The scanner already maps direction correctly (bybit_action/kucoin_action).
-        bb_iv = best.get("bybit_interval_h", 0) or 0
-        kc_iv = best.get("kucoin_interval_h", 0) or 0
+        # Ambil top N sesuai MAX_POSITIONS, kurangi yang sudah punya posisi terbuka
+        open_positions = self._paper.get_open_positions()
+        open_symbols = {p["symbol"] for p in open_positions}
+        already_in_delay = {o.symbol for o in self._delay_orders}
+        slots_available = max(0, AUTO_MAX_POSITIONS - len(open_positions) - len(self._delay_orders))
 
-        # Validate direction
-        bybit_action = best.get("bybit_action", "—")
-        if bybit_action == "—":
-            log.info("SKIP %s: flat spread", best["symbol"])
+        if slots_available <= 0:
             return
 
-        side_bb = "sell" if bybit_action == "SHORT" else "buy"
-        side_kc = "sell" if best.get("kucoin_action") == "SHORT" else "buy"
+        new_targets = []
+        for opp in candidates:
+            if opp["symbol"] in open_symbols or opp["symbol"] in already_in_delay:
+                continue
+            new_targets.append(opp)
+            if len(new_targets) >= slots_available:
+                break
 
-        # Calculate price spread ((P_Long - P_Short) / P_Short * 100)
-        bb_mark = best.get("bybit_mark", 0) or 0
-        kc_mark = best.get("kucoin_mark", 0) or 0
-        if bb_mark <= 0 or kc_mark <= 0:
-            price_spread = 0.0
-        else:
-            p_short = bb_mark if side_bb == "sell" else kc_mark
-            p_long = kc_mark if side_kc == "buy" else bb_mark
-            price_spread = ((p_long - p_short) / p_short) * 100.0
+        if not new_targets:
+            self._state = State.IDLE
+            log.info("LOOKING → IDLE: semua kandidat sudah punya posisi aktif")
+            return
 
-        # Create delay order
-        self._delay_order = DelayOrder(
-            symbol=best["symbol"],
-            side_bybit=side_bb,
-            side_kucoin=side_kc,
-            amount_usd=AUTO_BALANCE_PER_LEG,
-            leverage=AUTO_LEVERAGE,
-            entry_price_spread=price_spread,
-            entry_delta=best["delta_pct"],
-            bybit_rate=best["bybit_rate_pct"],
-            kucoin_rate=best["kucoin_rate_pct"],
-            bybit_next_ts=best.get("bybit_next_ts") or 0,
-            kucoin_next_ts=best.get("kucoin_next_ts") or 0,
-            bybit_interval_h=bb_iv,
-            kucoin_interval_h=kc_iv,
-        )
+        for best in new_targets:
+            bb_iv = best.get("bybit_interval_h", 0) or 0
+            kc_iv = best.get("kucoin_interval_h", 0) or 0
+
+            bybit_action = best.get("bybit_action", "—")
+            if bybit_action == "—":
+                log.info("SKIP %s: flat spread", best["symbol"])
+                continue
+
+            side_bb = "sell" if bybit_action == "SHORT" else "buy"
+            side_kc = "sell" if best.get("kucoin_action") == "SHORT" else "buy"
+
+            bb_mark = best.get("bybit_mark", 0) or 0
+            kc_mark = best.get("kucoin_mark", 0) or 0
+            if bb_mark <= 0 or kc_mark <= 0:
+                price_spread = 0.0
+            else:
+                p_short = bb_mark if side_bb == "sell" else kc_mark
+                p_long = kc_mark if side_kc == "buy" else bb_mark
+                price_spread = ((p_long - p_short) / p_short) * 100.0
+
+            delay_order = DelayOrder(
+                symbol=best["symbol"],
+                side_bybit=side_bb,
+                side_kucoin=side_kc,
+                amount_usd=AUTO_BALANCE_PER_LEG,
+                leverage=AUTO_LEVERAGE,
+                entry_price_spread=price_spread,
+                entry_delta=best["delta_pct"],
+                bybit_rate=best["bybit_rate_pct"],
+                kucoin_rate=best["kucoin_rate_pct"],
+                bybit_next_ts=best.get("bybit_next_ts") or 0,
+                kucoin_next_ts=best.get("kucoin_next_ts") or 0,
+                bybit_interval_h=bb_iv,
+                kucoin_interval_h=kc_iv,
+            )
+            self._delay_orders.append(delay_order)
+
+            bb_ts = best.get("bybit_next_ts", 0)
+            kc_ts = best.get("kucoin_next_ts", 0)
+            min_ts = min(bb_ts, kc_ts) if bb_ts and kc_ts else (bb_ts or kc_ts)
+            funding_in = "N/A"
+            if min_ts:
+                diff_sec = max(0, min_ts - now)
+                funding_in = f"{int(diff_sec // 60)} menit"
+
+            log.info(
+                "LOOKING → DELAY: %s  spread=%.4f%%  delta=%.4f%%  %s  BB_iv=%dh  KC_iv=%dh",
+                best["symbol"], price_spread, best["delta_pct"], best["direction"], bb_iv, kc_iv,
+            )
+            self._emit_event(
+                "state_change",
+                (
+                    f"🎯 *TARGET LOCKED*\n"
+                    f"Pair: *{best['symbol']}*\n"
+                    f"Direction: `{best['direction']}`\n\n"
+                    f"📊 *Stats:*\n"
+                    f"├ Diff FR: `{best['delta_pct']:.4f}%` (Raw: `{(best.get('raw_fr_diff', 0)/100):+.4f}%`)\n"
+                    f"├ Price Spread: `{price_spread:+.4f}%`\n"
+                    f"└ Interval: `BB {bb_iv}h / KC {kc_iv}h`\n\n"
+                    f"💰 *Position:*\n"
+                    f"└ `${AUTO_BALANCE_PER_LEG:.0f}` × `{AUTO_LEVERAGE}x` = `${AUTO_BALANCE_PER_LEG * AUTO_LEVERAGE:.0f}` per leg\n\n"
+                    f"⏰ Funding in: `{funding_in}` (WIB)\n"
+                    f"⚡ _Evaluating market condition..._"
+                ),
+            )
 
         self._state = State.DELAY
-        log.info(
-            "LOOKING → DELAY: %s  spread=%.4f%%  delta=%.4f%%  %s  BB_iv=%dh  KC_iv=%dh",
-            best["symbol"], (best.get("raw_fr_diff", 0) / 100.0), best["delta_pct"],
-            best["direction"], bb_iv, kc_iv,
-        )
-        import datetime
-        now_dt = datetime.datetime.now(datetime.timezone.utc)
-        wib_tz = datetime.timezone(datetime.timedelta(hours=7))
-        now_wib = now_dt.astimezone(wib_tz)
-
-        # Assuming funding times are typically top of the hour or similar
-        # If best has 'bybit_next_ts', let's format it to WIB
-        bb_ts = best.get("bybit_next_ts", 0)
-        kc_ts = best.get("kucoin_next_ts", 0)
-        min_ts = min(bb_ts, kc_ts) if bb_ts and kc_ts else (bb_ts or kc_ts)
-        
-        funding_in = "N/A"
-        if min_ts:
-            diff_sec = max(0, min_ts - now)
-            mins_left = diff_sec // 60
-            funding_in = f"{int(mins_left)} menit"
-
-        self._emit_event(
-            "state_change",
-            (
-                f"✅ *AUTO ENTRY*\n"
-                f"Pair: *{best['symbol']}*\n"
-                f"Margin: `${AUTO_BALANCE_PER_LEG:.0f}` × `{AUTO_LEVERAGE}x` = `${AUTO_BALANCE_PER_LEG * AUTO_LEVERAGE:.0f}`\n"
-                f"Price spread: `{price_spread:+.4f}%` ((Long-Short)/Short)\n"
-                f"Funding: `{(best.get('raw_fr_diff', 0)/100):+.4f}%`  |  Diff FR: `{best['delta_pct']:.4f}%`\n"
-                f"Direction: `{best['direction']}`\n"
-                f"⏰ Funding in: `{funding_in}` (WIB)\n"
-                f"⚡ _Monitoring market every {AUTO_MONITOR_INTERVAL}s…_"
-            ),
-        )
 
     # ─── DELAY ─────────────────────────────────────────────────────────
 
     def _tick_delay(self, now: float):
-        """Monitor spread during delay phase. Execute if stable, cancel if reversed."""
-        order = self._delay_order
-        if not order:
+        """Monitor delay orders. Entry jika spread <= AUTO_DELAY_ENTRY_PRICE_SPREAD.
+        Cancel jika Diff FR drop, lalu scan pair lain dalam window."""
+        if not self._delay_orders:
             self._state = State.IDLE
             return
 
-        # Check if still in funding window
-        bb_ts = order.bybit_next_ts
-        kc_ts = order.kucoin_next_ts
-        min_ts = min(bb_ts, kc_ts)
-        time_left = max(0, min_ts - now)
+        executed_any = False
+        cancelled_any = False
 
-        if time_left <= 0:
-            log.info("DELAY → IDLE: funding window expired for %s", order.symbol)
-            self._emit_event("cancel", f"⏰ Delay order expired — window closed for {order.symbol}")
-            self._delay_order = None
-            self._state = State.IDLE
-            return
+        for order in list(self._delay_orders):
+            bb_ts = order.bybit_next_ts
+            kc_ts = order.kucoin_next_ts
+            min_ts = min(bb_ts, kc_ts) if bb_ts and kc_ts else (bb_ts or kc_ts)
+            time_left = max(0, min_ts - now)
 
-        # Get latest scan for this symbol
-        scan = self._get_scan()
-        current = None
-        for opp in scan:
-            if opp["symbol"] == order.symbol:
-                current = opp
-                break
+            # Window expired → cancel, kembali LOOKING
+            if time_left <= 0:
+                log.info("DELAY → LOOKING: funding window expired for %s", order.symbol)
+                self._emit_event("cancel", f"⏰ Window habis untuk *{order.symbol}* — kembali scan...")
+                self._delay_orders.remove(order)
+                cancelled_any = True
+                continue
 
-        if not current:
-            # Symbol disappeared from scan? Re-scan.
-            run_scan()
-            scan = read_opportunities()
-            for opp in scan.get("opportunities", []):
-                if opp["symbol"] == order.symbol:
-                    current = opp
-                    break
+            # Ambil data scan terkini untuk pair ini
+            scan = self._get_scan()
+            current = next((o for o in scan if o["symbol"] == order.symbol), None)
             if not current:
-                self._delay_order = None
-                self._state = State.LOOKING
-                log.warning("DELAY → LOOKING: %s disappeared from scan", order.symbol)
-                return
+                run_scan()
+                fresh = read_opportunities()
+                current = next((o for o in fresh.get("opportunities", []) if o["symbol"] == order.symbol), None)
+            if not current:
+                log.warning("DELAY → LOOKING: %s hilang dari scan", order.symbol)
+                self._delay_orders.remove(order)
+                cancelled_any = True
+                continue
 
-        # Calculate current PRICE spread ((P_Long - P_Short) / P_Short * 100)
-        bb_mark = current.get("bybit_mark", 0) or 0
-        kc_mark = current.get("kucoin_mark", 0) or 0
-        if bb_mark <= 0 or kc_mark <= 0:
-            price_spread_now = 0.0
-        else:
-            p_short = bb_mark if order.side_bybit == "sell" else kc_mark
-            p_long = kc_mark if order.side_kucoin == "buy" else bb_mark
-            price_spread_now = ((p_long - p_short) / p_short) * 100.0
+            # Hitung Price Spread saat ini
+            bb_mark = current.get("bybit_mark", 0) or 0
+            kc_mark = current.get("kucoin_mark", 0) or 0
+            if bb_mark <= 0 or kc_mark <= 0:
+                price_spread_now = 0.0
+            else:
+                p_short = bb_mark if order.side_bybit == "sell" else kc_mark
+                p_long = kc_mark if order.side_kucoin == "buy" else bb_mark
+                price_spread_now = ((p_long - p_short) / p_short) * 100.0
 
-        # Also check funding reversal (for early cancel)
-        curr_delta = current["delta_pct"]
-        entry_delta = order.entry_delta
-        fund_spread_now = current.get("raw_fr_diff", 0) / 100.0  # Optional monitoring info
+            curr_delta = current.get("delta_pct", 0)
+            entry_delta = order.entry_delta
+            entry_ps = order.entry_price_spread
 
-        # Reversal: funding delta dropped to <= configured threshold
-        delta_dropped = abs(curr_delta) <= AUTO_DELAY_CANCEL_FUNDING_DIFF
+            # ── CANCEL: Diff FR drop drastis ──────────────────────────────
+            if curr_delta <= AUTO_DELAY_CANCEL_FUNDING_DIFF:
+                log.info("DELAY cancel %s: Diff FR drop %.4f%% <= %.4f%%",
+                         order.symbol, curr_delta, AUTO_DELAY_CANCEL_FUNDING_DIFF)
+                self._emit_event(
+                    "cancel",
+                    f"🚫 *ENTRY CANCELLED* | {order.symbol}\n\n"
+                    f"⚠️ *Reason:* Diff FR anjlok\n"
+                    f"├ Diff FR: `{entry_delta:.4f}%` ➡️ `{curr_delta:.4f}%` (batas: `{AUTO_DELAY_CANCEL_FUNDING_DIFF}%`)\n"
+                    f"└ Price Spread: `{price_spread_now:+.4f}%`\n\n"
+                    f"🔄 _Scanning pair lain..._"
+                )
+                self._delay_orders.remove(order)
+                cancelled_any = True
+                continue
 
-        # Reversal: price spread > 0 is bad for entry (Long asset more expensive than Short asset)
-        entry_ps = order.entry_price_spread
-        price_flipped = price_spread_now > AUTO_DELAY_CANCEL_PRICE_SPREAD
+            # ── ENTRY: Price Spread <= AUTO_DELAY_ENTRY_PRICE_SPREAD ──────
+            if price_spread_now <= AUTO_DELAY_ENTRY_PRICE_SPREAD:
+                log.info("DELAY → EXECUTE: %s spread=%.4f%% <= %.4f%%",
+                         order.symbol, price_spread_now, AUTO_DELAY_ENTRY_PRICE_SPREAD)
+                self._execute_delay_order(order, current, time_left)
+                self._delay_orders.remove(order)
+                executed_any = True
+            else:
+                log.debug("DELAY waiting %s: spread=%.4f%% (target<=%.4f%%)  DiffFR=%.4f%%",
+                          order.symbol, price_spread_now, AUTO_DELAY_ENTRY_PRICE_SPREAD, curr_delta)
 
-        if delta_dropped or price_flipped:
-            reason = "funding delta dropped" if delta_dropped else "price spread flipped"
-            log.info(
-                "DELAY reversal: %s  %s  price_spread %+.4f→%+.4f  delta %.4f→%.4f",
-                order.symbol, reason, entry_ps, price_spread_now, entry_delta, curr_delta,
-            )
-            self._emit_event(
-                "cancel",
-                f"🚫 *ENTRY CANCELLED* | {order.symbol}\n\n"
-                f"⚠️ *Reason:* {reason}\n"
-                f"├ Price spread: `{entry_ps:+.4f}%` ➡️ `{price_spread_now:+.4f}%`\n"
-                f"└ Diff FR: `{entry_delta:.4f}%` ➡️ `{curr_delta:.4f}%`\n\n"
-                f"🔄 _Back to scanning…_"
-            )
-            self._delay_order = None
+        # Jika ada yang cancel dan masih dalam window, kembali ke LOOKING untuk cari pair baru
+        if cancelled_any and self._in_funding_window(now):
             self._state = State.LOOKING
-            return
-
-        # Lolos pengecekan, eksekusi saat itu juga tanpa penundaan (delay checks dihapus)
-        self._execute_delay_order(order, current, time_left)
+        elif not self._delay_orders and not executed_any:
+            self._state = State.IDLE
 
     # ─── EXECUTE ────────────────────────────────────────────────────────
 
@@ -575,6 +592,7 @@ class AutomationEngine:
             self._emit_event("state_change", f"📭 Position closed — back to IDLE")
             self._live_position_id = None
             self._delay_order = None
+            self._funding_threshold_met = False
             self._state = State.IDLE
             return
 
@@ -603,18 +621,36 @@ class AutomationEngine:
         # 2. Ambil kondisi entry & current (untuk laporan summary)
         entry_spread = pos.get("entry_spread", 0) or 0
         current_spread = current.get("spread_pct", 0) or 0
-
         current_delta = current.get("delta_pct", 0) or 0
         delay_order = self._delay_order
         entry_delta = delay_order.entry_delta if delay_order else current_delta
 
-        # 3. EXIT RULE: Funding Diff <= Config DAN Price Spread <= Config
-        if abs(current_delta) <= AUTO_LIVE_CLOSE_FUNDING_DIFF and price_spread_now <= AUTO_LIVE_CLOSE_PRICE_SPREAD:
-            log.info(
-                "LIVE → CLOSE: Exit criteria met for %s! Diff FR: %.4f%%, Price Spread: %.4f%%",
-                symbol, current_delta, price_spread_now
-            )
+        # ── LIVE EXIT: 2 Tahap Sequential ─────────────────────────────────────
+        # Tahap 1: Tunggu Diff FR <= AUTO_LIVE_CLOSE_FUNDING_DIFF
+        if not self._funding_threshold_met:
+            if abs(current_delta) <= AUTO_LIVE_CLOSE_FUNDING_DIFF:
+                self._funding_threshold_met = True
+                log.info(
+                    "LIVE Tahap 1 TERPENUHI: %s Diff FR=%.4f%% <= %.4f%%. Monitoring spread...",
+                    symbol, current_delta, AUTO_LIVE_CLOSE_FUNDING_DIFF
+                )
+                self._emit_event(
+                    "state_change",
+                    f"📉 *Tahap 1 Terpenuhi* | {symbol}\n\n"
+                    f"Diff FR sudah turun ke `{current_delta:.4f}%` (≤ `{AUTO_LIVE_CLOSE_FUNDING_DIFF}%`)\n"
+                    f"🔍 _Sekarang monitoring Price Spread untuk exit..._"
+                )
+            else:
+                log.debug("LIVE %s: menunggu Tahap 1 — Diff FR=%.4f%% (target<=%.4f%%)",
+                          symbol, current_delta, AUTO_LIVE_CLOSE_FUNDING_DIFF)
+            return
 
+        # Tahap 2: Setelah Tahap 1, close jika Price Spread >= AUTO_LIVE_CLOSE_PRICE_SPREAD
+        if price_spread_now >= AUTO_LIVE_CLOSE_PRICE_SPREAD:
+            log.info(
+                "LIVE Tahap 2 TERPENUHI → CLOSE: %s Price Spread=%.4f%% >= %.4f%%",
+                symbol, price_spread_now, AUTO_LIVE_CLOSE_PRICE_SPREAD
+            )
             if PAPER_MODE:
                 result = self._paper.close_position(pos_id)
             else:
@@ -625,15 +661,13 @@ class AutomationEngine:
                 "close",
                 _format_trade_summary(result, symbol, entry_spread, current_spread, entry_delta, current_delta),
             )
-
             self._live_position_id = None
             self._delay_order = None
+            self._funding_threshold_met = False
             self._state = State.IDLE
         else:
-            log.debug(
-                "LIVE %s: spread=%.4f%%  delta=%.4f%%  OK",
-                symbol, current_spread, current_delta,
-            )
+            log.debug("LIVE %s: Tahap 2 — menunggu spread %.4f%% >= %.4f%%",
+                      symbol, price_spread_now, AUTO_LIVE_CLOSE_PRICE_SPREAD)
 
     # ─── Helpers ────────────────────────────────────────────────────────
 

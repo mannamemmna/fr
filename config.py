@@ -48,13 +48,14 @@ AUTO_BALANCE_PER_LEG: float = float(os.getenv("AUTO_BALANCE_PER_LEG", "1000"))
 AUTO_MAX_POSITIONS: int = int(os.getenv("AUTO_MAX_POSITIONS", "1"))
 AUTO_MONITOR_INTERVAL: float = float(os.getenv("AUTO_MONITOR_INTERVAL", "0.5"))
 AUTO_ENTRY_WINDOW_MIN: int = int(os.getenv("AUTO_ENTRY_WINDOW_MIN", "30"))
+AUTO_DELTA_THRESHOLD: float = float(os.getenv("AUTO_DELTA_THRESHOLD", "0.4"))  # Min Diff FR untuk LOOKING
 AUTO_DELAY_CANCEL_PRICE_SPREAD: float = float(os.getenv("AUTO_DELAY_CANCEL_PRICE_SPREAD", "0.05"))
 AUTO_DELAY_CANCEL_FUNDING_DIFF: float = float(os.getenv("AUTO_DELAY_CANCEL_FUNDING_DIFF", "0.2"))
+AUTO_DELAY_ENTRY_PRICE_SPREAD: float = float(os.getenv("AUTO_DELAY_ENTRY_PRICE_SPREAD", "0.0"))  # Entry jika spread <= nilai ini
 
-AUTO_LIVE_CLOSE_FUNDING_DIFF: float = float(os.getenv("AUTO_LIVE_CLOSE_FUNDING_DIFF", "0.05"))
-AUTO_LIVE_CLOSE_PRICE_SPREAD: float = float(os.getenv("AUTO_LIVE_CLOSE_PRICE_SPREAD", "0.0"))
+AUTO_LIVE_CLOSE_FUNDING_DIFF: float = float(os.getenv("AUTO_LIVE_CLOSE_FUNDING_DIFF", "0.05"))   # Tahap 1: tunggu Diff FR drop
+AUTO_LIVE_CLOSE_PRICE_SPREAD: float = float(os.getenv("AUTO_LIVE_CLOSE_PRICE_SPREAD", "0.0"))    # Tahap 2: close jika spread >= nilai ini
 
-AUTO_PRICE_SPREAD_MAX_DRIFT: float = float(os.getenv("AUTO_PRICE_SPREAD_MAX_DRIFT", "0.1"))
 AUTO_PRICE_SPREAD_MAX_DRIFT: float = float(os.getenv("AUTO_PRICE_SPREAD_MAX_DRIFT", "0.05"))
 AUTO_PREFER_SAME_INTERVAL: bool = os.getenv("AUTO_PREFER_SAME_INTERVAL", "true").lower() in ("true", "1", "yes")
 # Auto-close all open paper positions on bot restart (prevents unmonitored floating)
