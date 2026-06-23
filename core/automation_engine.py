@@ -286,16 +286,12 @@ class AutomationEngine:
         min_ts = min(next_opp.get("bybit_next_ts", 0) or 0, next_opp.get("kucoin_next_ts", 0) or 0)
         time_left = max(0, min_ts - now)
         mins_left = time_left / 60
-
+        next_opp = max(candidates, key=lambda o: o["delta_pct"])
         log.info(
-            "IDLE → LOOKING: next funding in %.0fmin (%s, delta=%.4f%%)",
-            mins_left,
+            "IDLE → LOOKING: %d pairs within window. Best is %s (delta %.4f%%)",
+            len(candidates),
             next_opp["symbol"],
             next_opp["delta_pct"],
-        )
-        self._emit_event(
-            "state_change",
-            f"🔍 *Window open!* Next funding in {mins_left:.0f}min — scanning {len(candidates)} pairs…",
         )
         self._state = State.LOOKING
 
