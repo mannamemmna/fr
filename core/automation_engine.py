@@ -26,7 +26,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from config import (
     AUTO_MODE,
@@ -211,12 +211,6 @@ class AutomationEngine:
         self._thread.start()
         log.info("Automation engine started (enabled=%s)", self._enabled)
 
-    def stop(self):
-        self._stop_event.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-        log.info("Automation engine stopped")
-
     def enable(self):
         with self._lock:
             self._enabled = True
@@ -386,14 +380,7 @@ class AutomationEngine:
             side_bb = "sell" if bybit_action == "SHORT" else "buy"
             side_kc = "sell" if best.get("kucoin_action") == "SHORT" else "buy"
 
-            bb_mark = best.get("bybit_mark", 0) or 0
-            kc_mark = best.get("kucoin_mark", 0) or 0
-            if bb_mark <= 0 or kc_mark <= 0:
-                price_spread = 0.0
-            else:
-                p_short = bb_mark if side_bb == "sell" else kc_mark
-                p_long = kc_mark if side_kc == "buy" else bb_mark
-                price_spread = ((p_long - p_short) / p_short) * 100.0
+            price_spread = self._calculate_price_spread(best, side_bb, side_kc)
 
             delay_order = DelayOrder(
                 symbol=best["symbol"],
@@ -483,14 +470,7 @@ class AutomationEngine:
                 continue
 
             # Hitung Price Spread saat ini
-            bb_mark = current.get("bybit_mark", 0) or 0
-            kc_mark = current.get("kucoin_mark", 0) or 0
-            if bb_mark <= 0 or kc_mark <= 0:
-                price_spread_now = 0.0
-            else:
-                p_short = bb_mark if order.side_bybit == "sell" else kc_mark
-                p_long = kc_mark if order.side_kucoin == "buy" else bb_mark
-                price_spread_now = ((p_long - p_short) / p_short) * 100.0
+            price_spread_now = self._calculate_price_spread(current, order.side_bybit, order.side_kucoin)
 
             curr_delta = current.get("delta_pct", 0)
             entry_delta = order.entry_delta
@@ -622,14 +602,9 @@ class AutomationEngine:
             return  # No data yet, keep monitoring
 
         # 1. Hitung Price Spread: ((P_Long - P_Short) / P_Short * 100)
-        bb_mark = current.get("bybit_mark", 0) or 0
-        kc_mark = current.get("kucoin_mark", 0) or 0
-        if bb_mark <= 0 or kc_mark <= 0:
-            price_spread_now = 0.0
-        else:
-            p_short = bb_mark if pos.get("side_bybit", "").upper() == "SELL" else kc_mark
-            p_long = kc_mark if pos.get("side_kucoin", "").upper() == "BUY" else bb_mark
-            price_spread_now = ((p_long - p_short) / p_short) * 100.0
+        side_bb = pos.get("side_bybit", "").lower()
+        side_kc = pos.get("side_kucoin", "").lower()
+        price_spread_now = self._calculate_price_spread(current, side_bb, side_kc)
 
         # 2. Ambil kondisi entry & current (untuk laporan summary)
         entry_spread = pos.get("entry_spread", 0) or 0
@@ -683,6 +658,16 @@ class AutomationEngine:
                       symbol, price_spread_now, AUTO_LIVE_CLOSE_PRICE_SPREAD)
 
     # ─── Helpers ────────────────────────────────────────────────────────
+
+    def _calculate_price_spread(self, opp: dict, side_bb: str, side_kc: str) -> float:
+        """Calculate price spread ((P_Long - P_Short) / P_Short * 100)."""
+        bb_mark = opp.get("bybit_mark", 0) or 0
+        kc_mark = opp.get("kucoin_mark", 0) or 0
+        if bb_mark <= 0 or kc_mark <= 0:
+            return 0.0
+        p_short = bb_mark if side_bb == "sell" else kc_mark
+        p_long = kc_mark if side_kc == "buy" else bb_mark
+        return ((p_long - p_short) / p_short) * 100.0
 
     def _get_scan(self) -> List[dict]:
         """Get latest scan data, re-scan if stale."""

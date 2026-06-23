@@ -17,7 +17,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from exchanges import get_client, list_supported
+from exchanges import get_client
 from config import DATA_DIR
 
 OPPORTUNITIES_FILE = os.path.join(DATA_DIR, "opportunities.json")

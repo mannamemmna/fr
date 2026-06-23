@@ -49,7 +49,6 @@ AUTO_MAX_POSITIONS: int = int(os.getenv("AUTO_MAX_POSITIONS", "1"))
 AUTO_MONITOR_INTERVAL: float = float(os.getenv("AUTO_MONITOR_INTERVAL", "0.5"))
 AUTO_ENTRY_WINDOW_MIN: int = int(os.getenv("AUTO_ENTRY_WINDOW_MIN", "30"))
 AUTO_DELTA_THRESHOLD: float = float(os.getenv("AUTO_DELTA_THRESHOLD", "0.4"))  # Min Diff FR untuk LOOKING
-AUTO_DELAY_CANCEL_PRICE_SPREAD: float = float(os.getenv("AUTO_DELAY_CANCEL_PRICE_SPREAD", "0.05"))
 AUTO_DELAY_CANCEL_FUNDING_DIFF: float = float(os.getenv("AUTO_DELAY_CANCEL_FUNDING_DIFF", "0.2"))
 AUTO_DELAY_ENTRY_PRICE_SPREAD: float = float(os.getenv("AUTO_DELAY_ENTRY_PRICE_SPREAD", "0.0"))  # Entry jika spread <= nilai ini
 

@@ -382,10 +382,6 @@ class PaperEngine:
         with self._lock:
             return list(self._closed_positions)
 
-    def get_all_positions(self) -> List[Dict[str, Any]]:
-        with self._lock:
-            return self._positions + self._closed_positions
-
     def get_balance(self) -> float:
         return self._balance
 

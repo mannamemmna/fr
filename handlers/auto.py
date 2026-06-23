@@ -23,7 +23,7 @@ async def cmd_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"\n\n⏳ *Menunggu entry...*\n"
                 f"Pair: *{d['symbol']}* | {d['side_bb'].upper()} Bybit / {d['side_kc'].upper()} KuCoin\n"
                 f"Modal: `${d['amount']:.0f}` × {d['leverage']}x\n"
-                f"Diff FR: `{d.get('funding_diff', d.get('delta', 0)):.4f}%` | Stabil: `{d['stable']}` checks"
+                f"Diff FR: `{d.get('delta', 0):.4f}%`"
             )
         if s.get("live_position"):
             extra += f"\n\n📈 Posisi aktif: `{s['live_position'][:8]}...`"

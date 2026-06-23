@@ -53,10 +53,6 @@ def start_bg_scanner():
     log.info("Auto-scan enabled: every %ds", AUTO_SCAN_INTERVAL)
 
 
-def stop_bg_scanner():
-    _bg_scanner_stop.set()
-
-
 def _bg_scanner_loop():
     log.info("Background scanner started (interval=%ds)", AUTO_SCAN_INTERVAL)
     while not _bg_scanner_stop.is_set():

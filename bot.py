@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 import sys
 from pathlib import Path
 
@@ -92,9 +90,9 @@ def main():
                     f"_Balance: `${state.paper_engine.get_balance():.2f}`_"
                 )
             if NOTIFY_CHAT_ID:
-                import requests as _r
                 try:
-                    _r.post(
+                    import requests
+                    requests.post(
                         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                         json={"chat_id": NOTIFY_CHAT_ID, "text": startup_warn, "parse_mode": "Markdown"},
                         timeout=5,
@@ -107,13 +105,13 @@ def main():
         if not notify_chat_id:
             return
         # Strip markdown to avoid parse errors from symbol names/prices containing special chars
-        import re as _re
+        import re
+        import requests
         raw = event.message if event.message else ""
-        plain = _re.sub(r"[*`_\[\]]", "", raw)
+        plain = re.sub(r"[*`_\[\]]", "", raw)
         msg = f"🤖 Auto | {event.type}\n{plain}"
-        import requests as _r
         try:
-            _r.post(
+            requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
                 json={"chat_id": notify_chat_id, "text": msg},
                 timeout=5,

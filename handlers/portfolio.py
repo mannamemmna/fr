@@ -79,12 +79,12 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for o in opps:
             if o["symbol"].upper() == sym.upper():
                 next_funding_jam = o.get("next_funding", "—")
-                exit_bb = o.get("bybit_mark") or 0
-                exit_kc = o.get("kucoin_mark") or 0
-                qty = p.get("quantity", 0)
-                pnl_bb = qty * (entry_bb - exit_bb) if side_bb == "SELL" else qty * (exit_bb - entry_bb)
-                pnl_kc = qty * (entry_kc - exit_kc) if side_kc == "SELL" else qty * (exit_kc - entry_kc)
-                upnl = f"`{(pnl_bb + pnl_kc):+.2f}`"
+                break
+        
+        # Ambil uPnL langsung dari summary report
+        for pos_summary in summary["open_positions"]:
+            if pos_summary["id"] == p["id"]:
+                upnl = f"`{pos_summary.get('unrealized_pnl', 0.0):+.2f}`"
                 break
 
         funding_label = f"Funding: ⌛ Next payment {next_funding_jam} | Diterima: `{funding:+.2f}` USD"
