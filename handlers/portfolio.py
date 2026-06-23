@@ -1,7 +1,8 @@
 """/portfolio — Balances with Bybit/KuCoin split + open positions detail."""
 
 from __future__ import annotations
-
+import json
+from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes
 
@@ -76,9 +77,28 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Ambil jam next payment dari data scan
         next_funding_jam = "—"
         upnl = "—"
+        current_bb = "—"
+        current_kc = "—"
+
         for o in opps:
             if o["symbol"].upper() == sym.upper():
-                next_funding_jam = o.get("next_funding", "—")
+                # Format waktu ke WIB (Waktu Indonesia Barat, UTC+7)
+                bb_ts = o.get("bybit_next_ts", 0) or 0
+                kc_ts = o.get("kucoin_next_ts", 0) or 0
+                min_ts = min(bb_ts, kc_ts) if bb_ts and kc_ts else (bb_ts or kc_ts)
+
+                if min_ts > 0:
+                    dt_utc = datetime.fromtimestamp(min_ts, tz=timezone.utc)
+                    dt_wib = dt_utc.astimezone(timezone(timedelta(hours=7)))
+                    next_funding_jam = dt_wib.strftime("%H:%M WIB")
+                else:
+                    next_funding_jam = o.get("next_funding", "—").replace("UTC", "WIB") # Fallback lama
+
+                # Ambil mark price terkini untuk current price
+                c_bb = o.get("bybit_mark", 0)
+                c_kc = o.get("kucoin_mark", 0)
+                if c_bb: current_bb = f"${c_bb:.4f}"
+                if c_kc: current_kc = f"${c_kc:.4f}"
                 break
         
         # Ambil uPnL langsung dari summary report
@@ -95,6 +115,7 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"├─ Margin: `${margin:.0f}` × {lev}x = *${pos_size:.0f}*\n"
             f"├─ Arah: {dir_explain}\n"
             f"├─ {price_label}\n"
+            f"├─ Harga Saat Ini: Bybit `{current_bb}` | KuCoin `{current_kc}`\n"
             f"├─ {liq_label}\n"
             f"├─ {funding_label}\n"
             f"├─ Price Spread saat entry: `{spread_str}`\n"
