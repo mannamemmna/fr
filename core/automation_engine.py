@@ -180,7 +180,7 @@ class AutomationEngine:
         self._funding_threshold_met: bool = False   # Tahap 1 LIVE: sudah terpenuhi?
         self._last_scan: dict = {}
         self._last_log = time.time()
-        self._last_delay_notify: float = 0.0        # throttle notif DELAY (tiap 30 detik)
+        self._delay_notified: set = set()   # simpan symbol yg sudah dinotifikasi delay
 
     # ─── Properties ────────────────────────────────────────────────────
 
@@ -462,6 +462,8 @@ class AutomationEngine:
             if not current:
                 log.warning("DELAY → LOOKING: %s hilang dari scan", order.symbol)
                 self._delay_orders.remove(order)
+                if order.symbol in self._delay_notified:
+                    self._delay_notified.remove(order.symbol)
                 cancelled_any = True
                 continue
 
@@ -485,6 +487,8 @@ class AutomationEngine:
                     f"🔄 _Scanning pair lain..._"
                 )
                 self._delay_orders.remove(order)
+                if order.symbol in self._delay_notified:
+                    self._delay_notified.remove(order.symbol)
                 cancelled_any = True
                 continue
 
@@ -494,13 +498,16 @@ class AutomationEngine:
                          order.symbol, price_spread_now, AUTO_DELAY_ENTRY_PRICE_SPREAD)
                 self._execute_delay_order(order, current, time_left)
                 self._delay_orders.remove(order)
+                if order.symbol in self._delay_notified:
+                    self._delay_notified.remove(order.symbol)
                 executed_any = True
             else:
                 log.debug("DELAY waiting %s: spread=%.4f%% (target<=%.4f%%)  DiffFR=%.4f%%",
                           order.symbol, price_spread_now, AUTO_DELAY_ENTRY_PRICE_SPREAD, curr_delta)
-                # Kirim notifikasi monitoring ke Telegram tiap 30 detik (throttle)
-                if now - self._last_delay_notify >= 30:
-                    self._last_delay_notify = now
+                
+                # Kirim notifikasi CUKUP SEKALI di awal masuk queue DELAY
+                if order.symbol not in self._delay_notified:
+                    self._delay_notified.add(order.symbol)
                     mins_left = int(time_left // 60)
                     secs_left = int(time_left % 60)
                     self._emit_event(
