@@ -181,6 +181,7 @@ class AutomationEngine:
         self._funding_threshold_met: bool = False   # Tahap 1 LIVE: sudah terpenuhi?
         self._last_scan: dict = {}
         self._last_log = time.time()
+        self._last_delay_notify: float = 0.0        # throttle notif DELAY (tiap 30 detik)
 
     # ─── Properties ────────────────────────────────────────────────────
 
@@ -522,6 +523,19 @@ class AutomationEngine:
             else:
                 log.debug("DELAY waiting %s: spread=%.4f%% (target<=%.4f%%)  DiffFR=%.4f%%",
                           order.symbol, price_spread_now, AUTO_DELAY_ENTRY_PRICE_SPREAD, curr_delta)
+                # Kirim notifikasi monitoring ke Telegram tiap 30 detik (throttle)
+                if now - self._last_delay_notify >= 30:
+                    self._last_delay_notify = now
+                    mins_left = int(time_left // 60)
+                    secs_left = int(time_left % 60)
+                    self._emit_event(
+                        "state_change",
+                        f"⏳ *Monitoring DELAY* | {order.symbol}\n\n"
+                        f"├ Price Spread: `{price_spread_now:+.4f}%` (target: `<= {AUTO_DELAY_ENTRY_PRICE_SPREAD:.2f}%`)\n"
+                        f"├ Diff FR: `{curr_delta:.4f}%`\n"
+                        f"└ Funding dalam: `{mins_left}m {secs_left}s`\n\n"
+                        f"⚡ _Scanning spread setiap {AUTO_MONITOR_INTERVAL}s..._"
+                    )
 
         # Jika ada yang cancel dan masih dalam window, kembali ke LOOKING untuk cari pair baru
         if cancelled_any and self._in_funding_window(now):
