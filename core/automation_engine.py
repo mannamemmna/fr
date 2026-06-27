@@ -26,10 +26,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, List, Optional
-
-if TYPE_CHECKING:
-    from core.spread_engine import SpreadEngine
+from typing import List, Optional
 
 from config import (
     AUTO_MODE,
@@ -44,11 +41,13 @@ from config import (
     AUTO_DELAY_ENTRY_PRICE_SPREAD,
     AUTO_LIVE_CLOSE_FUNDING_DIFF, AUTO_LIVE_CLOSE_PRICE_SPREAD,
     PAPER_MODE,
+    REBALANCE_ENABLED,
 )
 from core.scanner import run_scan, read_opportunities
 from core.paper_engine import PaperEngine
 from core.spread_engine import SpreadEngine
 from core.market_cache import get_price_cache, get_funding_cache
+from core.rebalance_engine import RebalanceEngine
 
 log = logging.getLogger("fr-bot.auto")
 
@@ -175,6 +174,7 @@ class AutomationEngine:
         self._spread = spread_engine
         self._price = get_price_cache()
         self._funding = get_funding_cache()
+        self._rebalance_engine = RebalanceEngine(get_price_cache()) if REBALANCE_ENABLED else None
         self._state = State.IDLE
         self._enabled = AUTO_MODE
         self._lock = threading.Lock()
@@ -612,6 +612,20 @@ class AutomationEngine:
 
         if not current:
             return  # No data yet, keep monitoring
+
+        # ── Auto Rebalance check ──────────────────────────────────────
+        if self._rebalance_engine:
+            rebalance_result = self._rebalance_engine.check_and_rebalance(
+                position=pos,
+                paper_engine=self._paper,
+                notify_fn=self._emit_event,
+            )
+            if rebalance_result and rebalance_result.get("action") == "emergency_close":
+                self._live_position_id = None
+                self._live_order = None
+                self._funding_threshold_met = False
+                self._state = State.IDLE
+                return
 
         # 1. Hitung Price Spread: ((P_Long - P_Short) / P_Short * 100)
         side_bb = pos.get("side_bybit", "").lower()

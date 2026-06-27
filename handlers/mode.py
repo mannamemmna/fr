@@ -1,4 +1,4 @@
-"""/mode — Show trading mode (paper/live)."""
+""""/mode — Show trading mode (paper/live)."""
 
 from __future__ import annotations
 
@@ -15,7 +15,9 @@ async def cmd_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
         summ = state.paper_engine.get_summary()
         await update.message.reply_text(
             f"📄 PAPER MODE (Simulasi)\n\n"
-            f"Saldo: ${bal:.2f} USDT\n"
+            f"Saldo Bybit (sim):   ${summ.get('bybit_balance', 0):.2f}\n"
+            f"Saldo KuCoin (sim):  ${summ.get('kucoin_balance', 0):.2f}\n"
+            f"Total:               ${bal:.2f}\n"
             f"Posisi terbuka: {summ['open_positions']}\n"
             f"PnL direalisasi: {summ['realized_pnl']:+.2f}\n"
             f"Total PnL: {summ['total_pnl']:+.2f}\n\n"

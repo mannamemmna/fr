@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from config import REBALANCE_DELTA_THRESHOLD
 from core.scanner import read_opportunities
 import handlers.state as state
 
@@ -115,6 +116,30 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         funding_label = f"Funding: ⌛ Next payment {next_funding_jam} | Diterima: `{funding:+.2f}` USD"
 
         spread_str = f"{spread}%" if isinstance(spread, float) else str(spread)
+        
+        # ── Drift info untuk rebalancing ──
+        qty_bb = p.get("qty_bybit", 0) or p.get("quantity", 0)
+        qty_kc = p.get("qty_kucoin", 0) or p.get("quantity", 0)
+        entry_bb_price = p.get("entry_price_bybit", 0)
+        entry_kc_price = p.get("entry_price_kucoin", 0)
+        bb_notional = qty_bb * entry_bb_price
+        kc_notional = qty_kc * entry_kc_price
+        avg_notional = (bb_notional + kc_notional) / 2
+        drift_pct = abs(bb_notional - kc_notional) / max(avg_notional, 0.0001) * 100.0
+        margin_bb_pct = (margin / max(bb_notional, 0.0001)) * 100
+        margin_kc_pct = (margin / max(kc_notional, 0.0001)) * 100
+        drift_ok = drift_pct < REBALANCE_DELTA_THRESHOLD
+        drift_icon = "✅" if drift_ok else "⚠️"
+        
+        # Last rebalance
+        rebalance_info = "— (belum pernah)"
+        if state.rebalance_engine:
+            last_ts = state.rebalance_engine.get_last_rebalance_ts()
+            if last_ts > 0:
+                from datetime import datetime, timezone, timedelta
+                dt = datetime.fromtimestamp(last_ts, tz=timezone.utc).astimezone(timezone(timedelta(hours=7)))
+                rebalance_info = dt.strftime("%H:%M WIB")
+        
         lines.append(
             f"🪙 *{sym}* `{pid}`\n"
             f"├─ Margin: `${margin:.0f}` × {lev}x = *${pos_size:.0f}*\n"
@@ -125,7 +150,9 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"├─ {funding_label}\n"
             f"├─ Price Spread saat entry: `{spread_str}`\n"
             f"├─ Profit/Loss saat ini: {upnl} USD\n"
-            f"└─ Tutup: /close {pid}"
+            f"├─ Delta drift: `{drift_pct:.2f}%` (threshold: `{REBALANCE_DELTA_THRESHOLD}%`) {drift_icon}\n"
+            f"├─ Margin BB: `{margin_bb_pct:.1f}%` | KC: `{margin_kc_pct:.1f}%`\n"
+            f"└─ Rebalance: {rebalance_info} | Tutup: /close {pid}"
         )
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")

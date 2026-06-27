@@ -109,6 +109,13 @@ AUTO_DELAY_CANCEL_FUNDING_DIFF=0.2
 AUTO_DELAY_ENTRY_PRICE_SPREAD=0.0
 AUTO_LIVE_CLOSE_FUNDING_DIFF=0.05
 AUTO_LIVE_CLOSE_PRICE_SPREAD=0.0
+
+# Rebalancing
+REBALANCE_ENABLED=true
+REBALANCE_DELTA_THRESHOLD=5.0
+MIN_MARGIN_RATIO=0.15
+EMERGENCY_MARGIN=0.05
+REBALANCE_COOLDOWN_SEC=60
 ```
 
 Paper mode tidak butuh API key exchange.
@@ -159,6 +166,10 @@ LIVE MODE LOCKED: set LIVE_CONFIRM=true to allow real exchange orders
 | `/auto on` | Nyalakan automation |
 | `/auto off` | Matikan automation |
 | `/auto status` | Status automation |
+| `/rebalance` | Status rebalancing |
+| `/rebalance on/off` | Toggle auto rebalancing |
+| `/rebalance now` | Paksa rebalancing manual |
+| `/rebalance log` | Riwayat 10 aksi terakhir |
 
 ---
 
@@ -212,6 +223,24 @@ Tutup dua leg dan kirim trade summary + catat ke SQLite.
 
 ---
 
+## Auto Rebalancing
+
+Rebalancing menjaga posisi tetap delta-neutral saat harga bergerak signifikan.
+
+### Trigger
+
+| Trigger | Kondisi | Aksi |
+|---------|---------|------|
+| Delta drift | `\|BB_notional − KC_notional\| / avg > REBALANCE_DELTA_THRESHOLD` | Trim leg terbesar |
+| Margin danger | `margin_ratio < MIN_MARGIN_RATIO` | Rescale penuh |
+| Emergency | `margin_ratio < EMERGENCY_MARGIN` | Close semua |
+
+### Paper Mode Simulation
+
+Paper mode mensimulasikan dua saldo exchange terpisah (`bybit_balance` + `kucoin_balance`). Ini membuat paper trading terasa realistis: jika harga bergerak besar, saldo di salah satu exchange bisa habis (seperti margin call) meski total balance masih positif.
+
+---
+
 ## Local Database (SQLite)
 
 Bot menyimpan data ke `data/fr-bot.db`:
@@ -221,6 +250,7 @@ Bot menyimpan data ke `data/fr-bot.db`:
 | `trade_log` | Semua entry, close, cancel — PnL, fees, balance |
 | `event_log` | INFO/WARN/ERROR dengan timestamp |
 | `funding_snapshot` | Snapshot funding rate per symbol per exchange |
+| `rebalance_log` | Log aksi rebalancing (trim/rescale/emergency close) |
 
 Command SQL:
 
