@@ -175,7 +175,7 @@ class AutomationEngine:
 
         # Current state data
         self._delay_orders: List[DelayOrder] = []   # list pending delay orders (multi-position support)
-        self._delay_order: Optional[DelayOrder] = None  # backward compat alias (first in list)
+        self._live_order: Optional[DelayOrder] = None  # order yg sudah masuk LIVE
         self._live_position_id: Optional[str] = None
         self._funding_threshold_met: bool = False   # Tahap 1 LIVE: sudah terpenuhi?
         self._last_scan: dict = {}
@@ -194,7 +194,8 @@ class AutomationEngine:
 
     @property
     def delay_order(self) -> Optional[DelayOrder]:
-        return self._delay_order
+        """First pending delay order (backward compat)."""
+        return self._delay_orders[0] if self._delay_orders else None
 
     # ─── Control ───────────────────────────────────────────────────────
 
@@ -221,7 +222,9 @@ class AutomationEngine:
         with self._lock:
             self._enabled = False
             self._state = State.IDLE
-            self._delay_order = None
+            self._delay_orders.clear()
+            self._live_order = None
+            self._live_position_id = None
         self._emit_event("state_change", "🔴 Auto mode OFF — all pending orders cancelled")
         log.info("Auto mode DISABLED")
 
@@ -280,12 +283,8 @@ class AutomationEngine:
                 self._last_log = now
             return
 
-        # Sort by time-to-funding (closest first)
+        # Sort by time-to-funding (closest first), lalu ambil delta terbaik
         candidates.sort(key=lambda o: min(o.get("bybit_next_ts", 0) or 0, o.get("kucoin_next_ts", 0) or 0))
-        next_opp = candidates[0]
-        min_ts = min(next_opp.get("bybit_next_ts", 0) or 0, next_opp.get("kucoin_next_ts", 0) or 0)
-        time_left = max(0, min_ts - now)
-        mins_left = time_left / 60
         next_opp = max(candidates, key=lambda o: o["delta_pct"])
         log.info(
             "IDLE → LOOKING: %d pairs within window. Best is %s (delta %.4f%%)",
@@ -540,7 +539,7 @@ class AutomationEngine:
         else:
             log.error("Live execution not yet implemented")
             self._emit_event("error", "🔴 Live execution not yet implemented")
-            self._delay_order = None
+            self._live_order = None
             self._state = State.IDLE
             return
 
@@ -548,6 +547,7 @@ class AutomationEngine:
             pos = result.get("position", {})
             order.position_id = pos.get("id")
             self._live_position_id = order.position_id
+            self._live_order = order
 
             mins_left = time_left / 60
             self._state = State.LIVE
@@ -559,8 +559,8 @@ class AutomationEngine:
                     f"Pair: *{order.symbol}*\n"
                     f"Margin: `${order.amount_usd:.0f}` × `{order.leverage}x` = `${pos.get('position_size', order.amount_usd * order.leverage):.0f}`\n"
                     f"Price spread: `{order.entry_price_spread:+.4f}%` ((Long-Short)/Short)\n"
-                    f"Funding: `{(current.get('raw_fr_diff', 0)/100):+.4f}%`  |  Diff FR: `{current['delta_pct']:.4f}%`\n"
-                    f"Direction: `{current['direction']}`\n"
+                    f"Funding: `{(current.get('raw_fr_diff', 0)/100):+.4f}%`  |  Diff FR: `{current.get('delta_pct', 0):.4f}%`\n"
+                    f"Direction: `{current.get('direction', '—')}`\n"
                     f"⏰ Funding in: `{mins_left:.0f} menit` (WIB)\n"
                     f"⚡ _Monitoring market every {AUTO_MONITOR_INTERVAL}s…_"
                 ),
@@ -568,7 +568,7 @@ class AutomationEngine:
         else:
             errors = "\n".join(result.get("errors", ["unknown"]))
             self._emit_event("error", f"❌ Auto execution failed: {errors}")
-            self._delay_order = None
+            self._live_order = None
             self._state = State.LOOKING
 
     # ─── LIVE ───────────────────────────────────────────────────────────
@@ -587,7 +587,7 @@ class AutomationEngine:
             log.info("LIVE → IDLE: position %s closed (manual?)", pos_id[:12])
             self._emit_event("state_change", f"📭 Position closed — back to IDLE")
             self._live_position_id = None
-            self._delay_order = None
+            self._live_order = None
             self._funding_threshold_met = False
             self._state = State.IDLE
             return
@@ -613,8 +613,8 @@ class AutomationEngine:
         entry_spread = pos.get("entry_spread", 0) or 0
         current_spread = current.get("spread_pct", 0) or 0
         current_delta = current.get("delta_pct", 0) or 0
-        delay_order = self._delay_order
-        entry_delta = delay_order.entry_delta if delay_order else current_delta
+        live_order = self._live_order
+        entry_delta = live_order.entry_delta if live_order else current_delta
 
         # ── LIVE EXIT: 2 Tahap Sequential ─────────────────────────────────────
         # Tahap 1: Tunggu Diff FR <= AUTO_LIVE_CLOSE_FUNDING_DIFF
@@ -653,7 +653,7 @@ class AutomationEngine:
                 _format_trade_summary(result, symbol, entry_spread, current_spread, entry_delta, current_delta),
             )
             self._live_position_id = None
-            self._delay_order = None
+            self._live_order = None
             self._funding_threshold_met = False
             self._state = State.IDLE
         else:
@@ -673,14 +673,16 @@ class AutomationEngine:
         return ((p_long - p_short) / p_short) * 100.0
 
     def _get_scan(self) -> List[dict]:
-        """Get latest scan data, re-scan if stale."""
+        """Get latest scan data from disk. Force-scan only if file missing or truly empty.
+        Periodic refresh is handled by bg_scanner, so we don't duplicate."""
         data = read_opportunities()
         opps = data.get("opportunities", [])
-        if not opps or not self._last_scan:
+        if not opps:
+            # File missing or corrupt — force one scan
             run_scan()
             data = read_opportunities()
             opps = data.get("opportunities", [])
-            self._last_scan = data
+        self._last_scan = data
         return opps
 
     def _in_funding_window(self, now: float) -> bool:
@@ -722,8 +724,8 @@ class AutomationEngine:
             "state_desc": state_info.get(self._state, "?"),
         }
 
-        if self._delay_order:
-            do = self._delay_order
+        if self._delay_orders:
+            do = self._delay_orders[0]
             status["delay"] = {
                 "symbol": do.symbol,
                 "side_bb": do.side_bybit,

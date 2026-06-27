@@ -181,8 +181,8 @@ class PaperEngine:
         # Simulate fills
         bb_price = opp.get("bybit_mark") or opp.get("price", 0)
         kc_price = opp.get("kucoin_mark") or opp.get("price", 0)
-        avg_price = max(bb_price, kc_price, 0.0001)
-        quantity = position_size / avg_price
+        qty_bybit = position_size / max(bb_price, 0.0001)
+        qty_kucoin = position_size / max(kc_price, 0.0001)
 
         fee_per_leg = position_size * DEFAULT_TAKER_FEE
         fee = fee_per_leg * 2  # both legs
@@ -199,7 +199,9 @@ class PaperEngine:
             "amount_usd": amount_usd,
             "position_size": round(position_size, 2),
             "leverage": leverage,
-            "quantity": round(quantity, 8),
+            "qty_bybit": round(qty_bybit, 8),
+            "qty_kucoin": round(qty_kucoin, 8),
+            "quantity": round(qty_bybit, 8),  # backward compat
             "entry_price_bybit": bb_price,
             "entry_price_kucoin": kc_price,
             "entry_fee_bybit": round(fee_per_leg, 6),
@@ -207,6 +209,8 @@ class PaperEngine:
             "entry_spread": opp.get("spread_pct"),
             "entry_rate_bybit": opp.get("bybit_rate_pct"),
             "entry_rate_kucoin": opp.get("kucoin_rate_pct"),
+            "bybit_interval_h": opp.get("bybit_interval_h"),
+            "kucoin_interval_h": opp.get("kucoin_interval_h"),
             "entry_time": started_at,
             "status": "open",
             "paper": True,
@@ -267,18 +271,19 @@ class PaperEngine:
         # Compute PnL (mirrors live portfolio formula)
         entry_bb = pos.get("entry_price_bybit", 0)
         entry_kc = pos.get("entry_price_kucoin", 0)
-        qty = pos.get("quantity", 0)
+        qty_bb = pos.get("qty_bybit", 0) or pos.get("quantity", 0)
+        qty_kc = pos.get("qty_kucoin", 0) or pos.get("quantity", 0)
 
-        # Price PnL per leg
+        # Price PnL per leg — each leg has its OWN quantity
         if pos["side_bybit"] == "buy":
-            price_pnl_bb = qty * (exit_price_bb - entry_bb)
+            price_pnl_bb = qty_bb * (exit_price_bb - entry_bb)
         else:
-            price_pnl_bb = qty * (entry_bb - exit_price_bb)
+            price_pnl_bb = qty_bb * (entry_bb - exit_price_bb)
 
         if pos["side_kucoin"] == "buy":
-            price_pnl_kc = qty * (exit_price_kc - entry_kc)
+            price_pnl_kc = qty_kc * (exit_price_kc - entry_kc)
         else:
-            price_pnl_kc = qty * (entry_kc - exit_price_kc)
+            price_pnl_kc = qty_kc * (entry_kc - exit_price_kc)
 
         total_price_pnl = price_pnl_bb + price_pnl_kc
 
@@ -291,16 +296,22 @@ class PaperEngine:
         )
         total_fee = entry_fee + exit_fee
 
-        # Funding PnL estimate (on position size)
-        entry_spread = abs(float(pos.get("entry_spread", 0) or 0))
+        # Funding PnL estimate — berdasarkan FUNDING RATE, bukan price spread
+        entry_rate_bb = float(pos.get("entry_rate_bybit", 0) or 0) / 100.0
+        entry_rate_kc = float(pos.get("entry_rate_kucoin", 0) or 0) / 100.0
+        bb_iv = int(pos.get("bybit_interval_h", 8) or 8)
+        kc_iv = int(pos.get("kucoin_interval_h", 8) or 8)
         entry_time_str = pos.get("entry_time", _utcnow_iso())
         try:
             entry_dt = datetime.fromisoformat(entry_time_str.replace("Z", "+00:00"))
             hours_held = max(0, (_utcnow_ts() - entry_dt.timestamp()) / 3600.0)
         except (ValueError, AttributeError):
             hours_held = 0
-        intervals = hours_held / 8.0
-        funding_pnl = position_size * (entry_spread / 100.0) * intervals
+        # Funding dibayar setiap interval_h jam per leg
+        # Est: rate_leg * position_size * (hours_held / interval_hours)
+        fund_pnl_bb = entry_rate_bb * position_size * (hours_held / max(bb_iv, 1))
+        fund_pnl_kc = entry_rate_kc * position_size * (hours_held / max(kc_iv, 1))
+        funding_pnl = fund_pnl_bb + fund_pnl_kc
 
         realized_pnl = total_price_pnl + funding_pnl - total_fee
 
@@ -325,7 +336,7 @@ class PaperEngine:
             self._total_funding_pnl += funding_pnl
 
             # Move to closed
-            self._positions = [p for p in self._positions if p["id"] != position_id]
+            self._positions = [p for p in self._positions if p["id"] != pos["id"]]
             self._closed_positions.append(pos)
 
             self._save_portfolio()
