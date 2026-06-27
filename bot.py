@@ -33,6 +33,7 @@ from handlers.mode import cmd_mode
 from handlers.auto import cmd_auto
 from handlers.health import cmd_health
 from handlers.help import cmd_help
+from handlers.pair import cmd_pair
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -143,6 +144,7 @@ def main():
     app.add_handler(CommandHandler("auto", cmd_auto))
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("pair", cmd_pair))
 
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
         import telegram.error as _te
