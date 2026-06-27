@@ -55,10 +55,12 @@ async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
             total_fee = p.get("total_fee", 0)
             price_pnl = p.get("total_price_pnl", 0)
             funding = p.get("funding_pnl", 0)
+            fr_paid = p.get("fr_paid", 0)
+            fr_received = p.get("fr_received", 0)
             sign = "✅" if pnl >= 0 else "❌"
             lines.append(
                 f"{sign} *{sym}*  PnL: `{pnl:+.2f}`  "
-                f"(Harga: `{price_pnl:+.2f}` | Funding: `{funding:+.2f}` | Fee: `{total_fee:.2f}`)"
+                f"(Harga: `{price_pnl:+.2f}` | FR terima: `{fr_received:.2f}` | FR bayar: `{fr_paid:.2f}` | Fee: `{total_fee:.2f}`)"
             )
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")

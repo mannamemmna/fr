@@ -73,6 +73,8 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             liq_label = "Likuidasi: —"
 
         funding = p.get("funding_pnl", 0.0)
+        fr_paid = p.get("fr_paid", 0.0)
+        fr_received = p.get("fr_received", 0.0)
         
         # Ambil jam next payment dari data scan
         next_funding_jam = "—"
@@ -112,7 +114,8 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 upnl = f"`{(pnl_bb + pnl_kc):+.2f}`"
                 break
 
-        funding_label = f"Funding: ⌛ Next payment {next_funding_jam} | Diterima: `{funding:+.2f}` USD"
+        funding_label = f"Funding: ⌛ Next payment {next_funding_jam}"
+        fr_label = f"FR dibayar: `{fr_paid:.2f}` | diterima: `{fr_received:.2f}` | bersih: `{funding:+.2f}` USD"
 
         spread_str = f"{spread}%" if isinstance(spread, float) else str(spread)
 
@@ -124,6 +127,7 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"├─ Harga Saat Ini: Bybit `{current_bb}` | KuCoin `{current_kc}`\n"
             f"├─ {liq_label}\n"
             f"├─ {funding_label}\n"
+            f"├─ {fr_label}\n"
             f"├─ Price Spread saat entry: `{spread_str}`\n"
             f"├─ Profit/Loss saat ini: {upnl} USD\n"
             f"└─ Tutup: /close {pid}"

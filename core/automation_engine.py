@@ -109,6 +109,8 @@ def _format_trade_summary(result: dict, symbol: str, entry_spread: float,
 
     price_pnl = float(result.get("price_pnl", 0) or 0)
     funding_pnl = float(result.get("funding_pnl", 0) or 0)
+    fr_paid = float(result.get("fr_paid", 0) or 0)
+    fr_received = float(result.get("fr_received", 0) or 0)
     fees = float(result.get("fees", 0) or 0)
     realized_pnl = float(result.get("realized_pnl", 0) or 0)
     entry_price_bb = result.get("entry_price_bybit", "—")
@@ -145,7 +147,7 @@ def _format_trade_summary(result: dict, symbol: str, entry_spread: float,
         f"",
         f"━━━ *P&L BREAKDOWN* ━━━",
         f"Price PnL: `{price_pnl:+.2f} USD`",
-        f"Funding: `{funding_pnl:+.4f} USD`",
+        f"Funding: `{funding_pnl:+.4f} USD` (terima: `{fr_received:.2f}` | bayar: `{fr_paid:.2f}`)",
         f"Fees: `—{total_fee:.4f} USD`",
         f"│ Bybit: `—{entry_fee_bb:.4f}` (entry) + `—{exit_fee_bb:.4f}` (exit) = `—{entry_fee_bb+exit_fee_bb:.4f}`",
         f"│ KuCoin: `—{entry_fee_kc:.4f}` (entry) + `—{exit_fee_kc:.4f}` (exit) = `—{entry_fee_kc+exit_fee_kc:.4f}`",

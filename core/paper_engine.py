@@ -297,7 +297,7 @@ class PaperEngine:
         )
         total_fee = entry_fee + exit_fee
 
-        # Funding PnL estimate — berdasarkan FUNDING RATE, bukan price spread
+        # Funding PnL breakdown — SHORT leg receives FR, LONG leg pays FR
         entry_rate_bb = float(pos.get("entry_rate_bybit", 0) or 0) / 100.0
         entry_rate_kc = float(pos.get("entry_rate_kucoin", 0) or 0) / 100.0
         bb_iv = int(pos.get("bybit_interval_h", 8) or 8)
@@ -308,11 +308,17 @@ class PaperEngine:
             hours_held = max(0, (_utcnow_ts() - entry_dt.timestamp()) / 3600.0)
         except (ValueError, AttributeError):
             hours_held = 0
-        # Funding dibayar setiap interval_h jam per leg
         # Est: rate_leg * position_size * (hours_held / interval_hours)
-        fund_pnl_bb = entry_rate_bb * position_size * (hours_held / max(bb_iv, 1))
-        fund_pnl_kc = entry_rate_kc * position_size * (hours_held / max(kc_iv, 1))
-        funding_pnl = fund_pnl_bb + fund_pnl_kc
+        raw_bb = entry_rate_bb * position_size * (hours_held / max(bb_iv, 1))
+        raw_kc = entry_rate_kc * position_size * (hours_held / max(kc_iv, 1))
+        # SHORT → receive FR / LONG → pay FR
+        fr_paid_bb = 0.0 if pos["side_bybit"] == "sell" else raw_bb
+        fr_received_bb = raw_bb if pos["side_bybit"] == "sell" else 0.0
+        fr_paid_kc = 0.0 if pos["side_kucoin"] == "sell" else raw_kc
+        fr_received_kc = raw_kc if pos["side_kucoin"] == "sell" else 0.0
+        fr_paid = fr_paid_bb + fr_paid_kc
+        fr_received = fr_received_bb + fr_received_kc
+        funding_pnl = fr_received - fr_paid
 
         realized_pnl = total_price_pnl + funding_pnl - total_fee
 
@@ -328,6 +334,8 @@ class PaperEngine:
             pos["price_pnl_kc"] = round(price_pnl_kc, 8)
             pos["total_price_pnl"] = round(total_price_pnl, 8)
             pos["funding_pnl"] = round(funding_pnl, 8)
+            pos["fr_paid"] = round(fr_paid, 8)
+            pos["fr_received"] = round(fr_received, 8)
             pos["total_fee"] = round(total_fee, 8)
             pos["realized_pnl"] = round(realized_pnl, 8)
 
@@ -360,6 +368,8 @@ class PaperEngine:
             "realized_pnl": round(realized_pnl, 2),
             "price_pnl": round(total_price_pnl, 2),
             "funding_pnl": round(funding_pnl, 2),
+            "fr_paid": round(fr_paid, 2),
+            "fr_received": round(fr_received, 2),
             "fees": round(total_fee, 2),
             "balance_after": round(self._balance, 2),
             "amount_usd": pos.get("amount_usd", 0),

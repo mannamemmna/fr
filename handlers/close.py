@@ -29,7 +29,7 @@ async def cmd_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"ID: `{pos_id[:12]}`\n"
             f"Simbol: *{result.get('symbol', '?')}*\n"
             f"PnL Direalisasi: `{result.get('realized_pnl', 0):+.2f} USD`\n"
-            f"  └─ Harga: `{result.get('price_pnl', 0):+.2f}` | Funding: `{result.get('funding_pnl', 0):+.2f}` | Fee: `{result.get('fees', 0):.2f}`\n\n"
+            f"  └─ Harga: `{result.get('price_pnl', 0):+.2f}` | FR diterima: `{result.get('fr_received', 0):+.2f}` | FR dibayar: `{result.get('fr_paid', 0):+.2f}` | Fee: `{result.get('fees', 0):.2f}`\n\n"
             f"Saldo: `${state.paper_engine.get_balance():.2f}`",
             parse_mode="Markdown",
         )
