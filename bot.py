@@ -23,6 +23,7 @@ from core.market_cache import get_price_cache, get_funding_cache
 from core.ws_pool import WSPool
 from core.spread_engine import get_spread_engine
 from core.db import get_db
+from core.scanner import run_scan
 
 from handlers import state
 from handlers.status import cmd_status
@@ -70,10 +71,17 @@ def main():
         state.funding_cache,
         on_spread_update=lambda ex, typ, data: state.spread_engine.on_funding_update(ex, data),
     )
-    # No symbols yet — will be populated after first scan / when pair list is known
-    # Background scanner or /scan will call ws_pool.update_symbols()
-    state.ws_pool.start([])
-    log.info("WebSocket pool started (symbol subscription lazy)")
+    # Run one initial scan to get symbol list, then WS subscribes automatically
+    log.info("Running initial scan to bootstrap WebSocket subscriptions…")
+    try:
+        initial = run_scan()
+        state.last_scan = initial
+        syms = [o["symbol"] for o in initial.get("opportunities", [])]
+    except Exception:
+        log.warning("Initial scan failed, WS will start with empty symbol list (subscribe after /scan)")
+        syms = []
+    state.ws_pool.start(syms)
+    log.info("WebSocket pool started with %d symbols", len(syms))
 
     app = Application.builder().token(BOT_TOKEN).build()
 
