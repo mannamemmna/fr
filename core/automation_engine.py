@@ -48,6 +48,7 @@ from config import (
 from core.scanner import run_scan, read_opportunities
 from core.paper_engine import PaperEngine
 from core.spread_engine import SpreadEngine
+from core.market_cache import get_price_cache, get_funding_cache
 
 log = logging.getLogger("fr-bot.auto")
 
@@ -172,6 +173,8 @@ class AutomationEngine:
         self._paper = paper_engine
         self._event_callback = event_callback
         self._spread = spread_engine
+        self._price = get_price_cache()
+        self._funding = get_funding_cache()
         self._state = State.IDLE
         self._enabled = AUTO_MODE
         self._lock = threading.Lock()
@@ -679,16 +682,17 @@ class AutomationEngine:
         return ((p_long - p_short) / p_short) * 100.0
 
     def _get_scan(self) -> List[dict]:
-        """Get latest market data. Prefer WS-driven spread_engine signals,
+        """Get latest market data. Compute fresh from WS-driven caches every call,
         fall back to file-based scan."""
         if self._spread:
-            signals = self._spread.get_all_signals()
-            if signals:
-                # Only return symbols that have both price and funding data
-                now = time.time()
-                win = AUTO_ENTRY_WINDOW_MIN * 60
+            # Compute fresh signal for every symbol that has price data
+            symbols = self._price.all_symbols()
+            if symbols:
                 result = []
-                for sym, sig in signals.items():
+                for sym in symbols:
+                    sig = self._spread.compute_signal(sym)
+                    if not sig:
+                        continue
                     # Convert signal dict to match old opportunity schema
                     sig["bybit_mark"] = sig.get("bybit_price", 0)
                     sig["kucoin_mark"] = sig.get("kucoin_price", 0)
@@ -704,6 +708,8 @@ class AutomationEngine:
                     sig["spread_pct"] = sig.get("price_spread_pct", 0)
                     sig["raw_fr_diff"] = sig.get("raw_fr_diff", 0)
                     result.append(sig)
+                # Sort by funding diff descending (matching old behavior)
+                result.sort(key=lambda o: o.get("funding_diff_pct", 0), reverse=True)
                 self._last_scan = {"opportunities": result}
                 return result
 
