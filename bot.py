@@ -39,7 +39,6 @@ from handlers.auto import cmd_auto
 from handlers.health import cmd_health
 from handlers.help import cmd_help
 from handlers.pair import cmd_pair
-from handlers.rebalance import cmd_rebalance
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -161,8 +160,6 @@ def main():
             spread_engine=state.spread_engine,
         )
         state.auto_engine.start()
-        # Expose rebalance engine for handlers
-        state.rebalance_engine = state.auto_engine._rebalance_engine
         if NOTIFY_CHAT_ID:
             state._notify_chat_id = NOTIFY_CHAT_ID
             state.auto_engine.set_notify_chat(NOTIFY_CHAT_ID)
@@ -185,8 +182,7 @@ def main():
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("pair", cmd_pair))
-    app.add_handler(CommandHandler("rebalance", cmd_rebalance))
-
+ 
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
         import telegram.error as _te
         err = context.error

@@ -7,7 +7,6 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from config import PAPER_MODE, AUTO_SCAN_INTERVAL, AUTO_MONITOR_INTERVAL, AUTO_ENTRY_WINDOW_MIN
-from config import REBALANCE_ENABLED, REBALANCE_DELTA_THRESHOLD, REBALANCE_COOLDOWN_SEC
 from core.scanner import read_opportunities
 import handlers.state as state
 
@@ -92,14 +91,6 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🔹 Window entry: {AUTO_ENTRY_WINDOW_MIN} menit sebelum funding",
         "",
     ]
-
-    # ── Rebalancing status ──
-    if REBALANCE_ENABLED:
-        lines.append(
-            f"⚖️ Auto Rebalancing: {'🟢 ON' if state.rebalance_engine and state.rebalance_engine.enabled else '🔴 OFF'} "
-            f"| threshold {REBALANCE_DELTA_THRESHOLD}% | cooldown {REBALANCE_COOLDOWN_SEC}s"
-        )
-        lines.append("")
 
     if open_positions:
         lines.append(f"*📊 Posisi Terbuka ({len(open_positions)})*")

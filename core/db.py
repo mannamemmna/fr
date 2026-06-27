@@ -88,28 +88,6 @@ class LocalDB:
             CREATE INDEX IF NOT EXISTS idx_event_ts ON event_log(ts DESC);
             CREATE INDEX IF NOT EXISTS idx_trade_ts ON trade_log(ts DESC);
             CREATE INDEX IF NOT EXISTS idx_funding_sym ON funding_snapshot(symbol, ts DESC);
-
-            CREATE TABLE IF NOT EXISTS rebalance_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts REAL NOT NULL,
-                position_id TEXT NOT NULL,
-                symbol TEXT NOT NULL,
-                action TEXT NOT NULL,
-                trigger TEXT NOT NULL,
-                drift_before REAL,
-                drift_after REAL,
-                margin_ratio_before REAL,
-                margin_ratio_after REAL,
-                qty_before_bb REAL,
-                qty_after_bb REAL,
-                qty_before_kc REAL,
-                qty_after_kc REAL,
-                fee_paid REAL,
-                paper INTEGER DEFAULT 1,
-                details TEXT
-            );
-            CREATE INDEX IF NOT EXISTS idx_rebalance_ts ON rebalance_log(ts DESC);
-            CREATE INDEX IF NOT EXISTS idx_rebalance_pos ON rebalance_log(position_id);
         """)
         conn.commit()
 
@@ -181,47 +159,7 @@ class LocalDB:
         conn.commit()
 
 
-    # ─── Rebalance log ──────────────────────────────────────────────────
-
-    def log_rebalance(self, position_id: str, symbol: str, action: str,
-                      trigger: str, **kwargs):
-        conn = self._get_conn()
-        conn.execute(
-            """INSERT INTO rebalance_log (ts, position_id, symbol, action, trigger,
-               drift_before, drift_after, margin_ratio_before, margin_ratio_after,
-               qty_before_bb, qty_after_bb, qty_before_kc, qty_after_kc,
-               fee_paid, paper, details)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                time.time(),
-                position_id,
-                symbol,
-                action,
-                trigger,
-                kwargs.get("drift_before"),
-                kwargs.get("drift_after"),
-                kwargs.get("margin_ratio_before"),
-                kwargs.get("margin_ratio_after"),
-                kwargs.get("qty_before_bb"),
-                kwargs.get("qty_after_bb"),
-                kwargs.get("qty_before_kc"),
-                kwargs.get("qty_after_kc"),
-                kwargs.get("fee_paid", 0),
-                1 if kwargs.get("paper", True) else 0,
-                json.dumps({k: v for k, v in kwargs.items() if v is not None}) if kwargs else None,
-            ),
-        )
-        conn.commit()
-
-    def recent_rebalances(self, limit: int = 10) -> list[dict]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT * FROM rebalance_log ORDER BY ts DESC LIMIT ?", (limit,)
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-
-# ─── Singleton ──────────────────────────────────────────────────────────────
+    # ─── Singleton ──────────────────────────────────────────────────────────────
 
 _db_instance: Optional[LocalDB] = None
 

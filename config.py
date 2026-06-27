@@ -43,15 +43,6 @@ WS_HEARTBEAT_SEC: int = int(os.getenv("WS_HEARTBEAT_SEC", "20"))
 REST_RATE_LIMIT_PER_SEC: int = int(os.getenv("REST_RATE_LIMIT_PER_SEC", "10"))
 DB_PATH: str = str(os.getenv("DB_PATH", "fr-bot.db"))
 
-# ─── Auto Rebalancing ───
-REBALANCE_ENABLED: bool = os.getenv("REBALANCE_ENABLED", "true").lower() in ("true", "1", "yes")
-REBALANCE_DELTA_THRESHOLD: float = float(os.getenv("REBALANCE_DELTA_THRESHOLD", "5.0"))
-MIN_MARGIN_RATIO: float = float(os.getenv("MIN_MARGIN_RATIO", "0.15"))
-EMERGENCY_MARGIN: float = float(os.getenv("EMERGENCY_MARGIN", "0.05"))
-REBALANCE_TIMEOUT_SEC: int = int(os.getenv("REBALANCE_TIMEOUT_SEC", "300"))
-REBALANCE_COOLDOWN_SEC: int = int(os.getenv("REBALANCE_COOLDOWN_SEC", "60"))
-PAPER_EXCHANGE_SPLIT: float = float(os.getenv("PAPER_EXCHANGE_SPLIT", "0.5"))
-
 # ─── Leverage ───
 DEFAULT_LEVERAGE: int = int(os.getenv("DEFAULT_LEVERAGE", "2"))
 

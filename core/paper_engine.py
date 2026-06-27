@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from config import DATA_DIR, PAPER_INITIAL_BALANCE, PAPER_EXCHANGE_SPLIT
+from config import DATA_DIR, PAPER_INITIAL_BALANCE
 from core.scanner import read_opportunities
 
 log = logging.getLogger("paper_engine")
@@ -47,17 +47,12 @@ class PaperEngine:
 
     Maintains virtual USDT balance, tracks paper positions with entry/exit
     prices, and computes PnL identically to the live portfolio module.
-
-    Uses separate simulated balances per exchange (bybit / kucoin) for
-    realistic margin simulation.
     """
 
     def __init__(self):
         self._lock = threading.RLock()
         self._positions: List[Dict[str, Any]] = []
         self._balance = PAPER_INITIAL_BALANCE
-        self._bybit_balance = PAPER_INITIAL_BALANCE * PAPER_EXCHANGE_SPLIT
-        self._kucoin_balance = PAPER_INITIAL_BALANCE * (1 - PAPER_EXCHANGE_SPLIT)
         self._realized_pnl = 0.0
         self._total_fees = 0.0
         self._total_funding_pnl = 0.0
@@ -73,8 +68,6 @@ class PaperEngine:
             with open(STATE_FILE) as f:
                 state = json.load(f)
             self._balance = float(state.get("balance", PAPER_INITIAL_BALANCE))
-            self._bybit_balance = float(state.get("bybit_balance", PAPER_INITIAL_BALANCE * PAPER_EXCHANGE_SPLIT))
-            self._kucoin_balance = float(state.get("kucoin_balance", PAPER_INITIAL_BALANCE * (1 - PAPER_EXCHANGE_SPLIT)))
             self._realized_pnl = float(state.get("realized_pnl", 0))
             self._total_fees = float(state.get("total_fees", 0))
             self._total_funding_pnl = float(state.get("total_funding_pnl", 0))
@@ -86,8 +79,6 @@ class PaperEngine:
     def _save_state(self):
         state = {
             "balance": self._balance,
-            "bybit_balance": self._bybit_balance,
-            "kucoin_balance": self._kucoin_balance,
             "realized_pnl": self._realized_pnl,
             "total_fees": self._total_fees,
             "total_funding_pnl": self._total_funding_pnl,
@@ -165,14 +156,6 @@ class PaperEngine:
             errors.append(
                 f"insufficient paper balance: need ${amount_usd:.2f} margin, have ${self._balance:.2f}"
             )
-        if amount_usd > self._bybit_balance:
-            errors.append(
-                f"insufficient_bybit_balance: need ${amount_usd:.2f}, have ${self._bybit_balance:.2f}"
-            )
-        if amount_usd > self._kucoin_balance:
-            errors.append(
-                f"insufficient_kucoin_balance: need ${amount_usd:.2f}, have ${self._kucoin_balance:.2f}"
-            )
 
         # Get current prices from latest scan
         opp = self._get_opportunity(symbol)
@@ -205,8 +188,6 @@ class PaperEngine:
         fee_per_leg = position_size * DEFAULT_TAKER_FEE
         fee = fee_per_leg * 2  # both legs
         self._balance -= amount_usd + fee
-        self._bybit_balance -= amount_usd + fee_per_leg
-        self._kucoin_balance -= amount_usd + fee_per_leg
         self._total_fees += fee
 
         # Record position
@@ -256,65 +237,6 @@ class PaperEngine:
         }
         self._log_execution(result)
         return result
-
-    def partial_close_leg(
-        self,
-        position_id: str,
-        exchange: str,
-        close_qty: float,
-    ) -> Dict[str, Any]:
-        """Tutup sebagian qty dari satu leg saja (untuk A1 Trim)."""
-        with self._lock:
-            pos = next(
-                (p for p in self._positions if p.get("id", "").startswith(position_id)),
-                None,
-            )
-            if not pos:
-                return {"ok": False, "error": "position not found", "position_id": position_id}
-
-            close_qty = abs(close_qty)
-
-            if exchange == "bybit":
-                current_qty = float(pos.get("qty_bybit", 0) or 0)
-                if close_qty >= current_qty:
-                    return {"ok": False, "error": "close_qty >= full qty, use close_position instead"}
-                new_qty = current_qty - close_qty
-                pos["qty_bybit"] = round(new_qty, 8)
-                pos["quantity"] = round(new_qty, 8)
-                # Fee & balance
-                price = float(pos.get("entry_price_bybit", 0))
-                close_notional = close_qty * price
-                fee = close_notional * DEFAULT_TAKER_FEE
-                self._bybit_balance += close_notional - fee
-                self._total_fees += fee
-                self._balance += close_notional * 0.5 - fee
-            elif exchange == "kucoin":
-                current_qty = float(pos.get("qty_kucoin", 0) or 0)
-                if close_qty >= current_qty:
-                    return {"ok": False, "error": "close_qty >= full qty, use close_position instead"}
-                new_qty = current_qty - close_qty
-                pos["qty_kucoin"] = round(new_qty, 8)
-                # Fee & balance
-                price = float(pos.get("entry_price_kucoin", 0))
-                close_notional = close_qty * price
-                fee = close_notional * DEFAULT_TAKER_FEE
-                self._kucoin_balance += close_notional - fee
-                self._total_fees += fee
-                self._balance += close_notional * 0.5 - fee
-            else:
-                return {"ok": False, "error": f"unknown exchange: {exchange}"}
-
-            self._save_portfolio()
-            self._save_state()
-
-        return {
-            "ok": True,
-            "exchange": exchange,
-            "close_qty": close_qty,
-            "new_qty_bb": pos.get("qty_bybit", 0),
-            "new_qty_kc": pos.get("qty_kucoin", 0),
-            "fee": fee,
-        }
 
     def close_position(self, position_id: str) -> Dict[str, Any]:
         """Close a paper position and compute realized PnL."""
@@ -394,7 +316,7 @@ class PaperEngine:
 
         realized_pnl = total_price_pnl + funding_pnl - total_fee
 
-        # Update balance & state — return margin ke exchange masing-masing
+        # Update balance & state
         with self._lock:
             pos["status"] = "closed"
             pos["exit_price_bybit"] = exit_price_bb
@@ -410,8 +332,6 @@ class PaperEngine:
             pos["realized_pnl"] = round(realized_pnl, 8)
 
             self._balance += pos["amount_usd"] + realized_pnl
-            self._bybit_balance += pos["amount_usd"] + price_pnl_bb + fund_pnl_bb - exit_fee_per_leg
-            self._kucoin_balance += pos["amount_usd"] + price_pnl_kc + fund_pnl_kc - exit_fee_per_leg
             self._realized_pnl += realized_pnl
             self._total_fees += exit_fee
             self._total_funding_pnl += funding_pnl
@@ -477,12 +397,6 @@ class PaperEngine:
     def get_balance(self) -> float:
         return self._balance
 
-    def get_bybit_balance(self) -> float:
-        return self._bybit_balance
-
-    def get_kucoin_balance(self) -> float:
-        return self._kucoin_balance
-
     def get_summary(self) -> dict:
         """Portfolio summary for /portfolio and /pnl commands."""
         open_positions = self.get_open_positions()
@@ -498,8 +412,8 @@ class PaperEngine:
                 entry_bb = pos.get("entry_price_bybit", 0)
                 entry_kc = pos.get("entry_price_kucoin", 0)
                 # Use per-leg qty
-                qty_bb = pos.get("qty_bybit", 0) or pos.get("quantity", 0)
-                qty_kc = pos.get("qty_kucoin", 0) or pos.get("quantity", 0)
+                qty_bb = pos.get("qty_bybit", 0) or 0
+                qty_kc = pos.get("qty_kucoin", 0) or 0
                 if pos["side_bybit"] == "buy":
                     pnl_bb = qty_bb * (exit_bb - entry_bb)
                 else:
@@ -511,18 +425,15 @@ class PaperEngine:
                 unrealized_pnl += pnl_bb + pnl_kc
 
         return {
-            "paper_mode": True,
-            "balance": round(self._balance, 2),
-            "bybit_balance": round(self._bybit_balance, 2),
-            "kucoin_balance": round(self._kucoin_balance, 2),
-            "initial_balance": PAPER_INITIAL_BALANCE,
-            "realized_pnl": round(self._realized_pnl, 2),
-            "unrealized_pnl": round(unrealized_pnl, 2),
-            "total_pnl": round(self._realized_pnl + unrealized_pnl, 2),
-            "total_fees": round(self._total_fees, 2),
-            "total_funding_pnl": round(self._total_funding_pnl, 2),
+            "balance": self._balance,
+            "realized_pnl": self._realized_pnl,
+            "unrealized_pnl": unrealized_pnl,
+            "total_pnl": self._realized_pnl + unrealized_pnl,
+            "total_exposure": total_exposure,
             "open_positions": len(open_positions),
-            "total_exposure": round(total_exposure, 2),
-            "closed_positions": len(self._closed_positions),
             "positions": open_positions,
+            "closed": len(self._closed_positions),
+            "passed_funding_cycles": sum(
+                1 for c in self._closed_positions if abs(c.get("funding_pnl", 0)) > 0
+            ),
         }
