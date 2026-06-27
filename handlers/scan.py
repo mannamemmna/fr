@@ -1,12 +1,14 @@
-"""/scan — Trigger fresh funding rate scan."""
-
 from __future__ import annotations
+
+import logging
 
 from telegram import Update
 from telegram.ext import ContextTypes
 
 from core.scanner import run_scan
 import handlers.state as state
+
+log = logging.getLogger("fr-bot.scan")
 
 
 def _format_opp(o: dict, rank: int = 0) -> str:
@@ -35,6 +37,13 @@ async def cmd_scan(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         payload = run_scan()
         state.last_scan = payload
+
+        # Subscribe WebSocket to all common symbols so next calls are real-time
+        symbols = [o["symbol"] for o in payload.get("opportunities", [])]
+        if symbols and state.ws_pool:
+            state.ws_pool.update_symbols(symbols)
+            log.debug("/scan: WS subscribed to %d symbols", len(symbols))
+
         opps = payload["opportunities"]
         dur = payload["scan_duration"]
         bb = payload["bybit_count"]
