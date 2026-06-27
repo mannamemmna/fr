@@ -41,7 +41,7 @@ AUTO_SCAN_INTERVAL: int = int(os.getenv("AUTO_SCAN_INTERVAL", 60))
 # ─── WebSocket ───
 WS_HEARTBEAT_SEC: int = int(os.getenv("WS_HEARTBEAT_SEC", "20"))
 REST_RATE_LIMIT_PER_SEC: int = int(os.getenv("REST_RATE_LIMIT_PER_SEC", "10"))
-DB_PATH: str = str(os.getenv("DB_PATH", "data/fr-bot.db"))
+DB_PATH: str = str(os.getenv("DB_PATH", "fr-bot.db"))
 
 # ─── Leverage ───
 DEFAULT_LEVERAGE: int = int(os.getenv("DEFAULT_LEVERAGE", "2"))
