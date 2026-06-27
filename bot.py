@@ -19,6 +19,10 @@ from core.live_engine import LiveEngine, LiveModeLockedError, MissingLiveCredent
 from core.automation_engine import AutomationEngine, AutoEvent
 from core.bg_scanner import start_bg_scanner
 from core.scheduler import register_jobs
+from core.market_cache import get_price_cache, get_funding_cache
+from core.ws_pool import WSPool
+from core.spread_engine import get_spread_engine
+from core.db import get_db
 
 from handlers import state
 from handlers.status import cmd_status
@@ -50,6 +54,27 @@ def main():
     log.info("Starting FR Bot…")
     log.info("Mode: %s", "PAPER" if PAPER_MODE else "LIVE")
 
+    # ── Local DB ──
+    state.db = get_db()
+    state.db.log_event("INFO", "bot", "Bot starting…")
+
+    # ── Market Cache & Spread Engine (event-driven) ──
+    state.price_cache = get_price_cache()
+    state.funding_cache = get_funding_cache()
+    state.spread_engine = get_spread_engine()
+
+    # ── WebSocket Connection Pool ──
+    # Subscribe to common symbols on startup; updates cascade to spread engine
+    state.ws_pool = WSPool(
+        state.price_cache,
+        state.funding_cache,
+        on_spread_update=lambda ex, typ, data: state.spread_engine.on_funding_update(ex, data),
+    )
+    # No symbols yet — will be populated after first scan / when pair list is known
+    # Background scanner or /scan will call ws_pool.update_symbols()
+    state.ws_pool.start([])
+    log.info("WebSocket pool started (symbol subscription lazy)")
+
     app = Application.builder().token(BOT_TOKEN).build()
 
     # ── Engines ──
@@ -60,6 +85,7 @@ def main():
             state.paper_engine = LiveEngine()
         except (LiveModeLockedError, MissingLiveCredentialsError) as e:
             log.error("❌ Live mode refused: %s", e)
+            state.db.log_event("ERROR", "bot", f"Live mode refused: {e}")
             return 1
 
     # 🛡️ Restart check
@@ -105,7 +131,6 @@ def main():
     def _on_auto_event(event: AutoEvent, notify_chat_id: str | None = None):
         if not notify_chat_id:
             return
-        # Strip markdown to avoid parse errors from symbol names/prices containing special chars
         import re
         import requests
         raw = event.message if event.message else ""
@@ -121,7 +146,11 @@ def main():
             log.debug("Cannot send auto event to %s", notify_chat_id)
 
     if state.paper_engine:
-        state.auto_engine = AutomationEngine(state.paper_engine, event_callback=_on_auto_event)
+        state.auto_engine = AutomationEngine(
+            state.paper_engine,
+            event_callback=_on_auto_event,
+            spread_engine=state.spread_engine,  # <-- inject spread engine (WS-driven)
+        )
         state.auto_engine.start()
         if NOTIFY_CHAT_ID:
             state._notify_chat_id = NOTIFY_CHAT_ID
@@ -162,6 +191,7 @@ def main():
     # Built-in scheduled notifications (daily summary, health alerts, startup ping)
     register_jobs(app)
 
+    state.db.log_event("INFO", "bot", "Bot polling started")
     log.info("Bot polling started…")
     app.run_polling(drop_pending_updates=True)
 

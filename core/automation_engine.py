@@ -26,7 +26,10 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
+
+if TYPE_CHECKING:
+    from core.spread_engine import SpreadEngine
 
 from config import (
     AUTO_MODE,
@@ -44,6 +47,7 @@ from config import (
 )
 from core.scanner import run_scan, read_opportunities
 from core.paper_engine import PaperEngine
+from core.spread_engine import SpreadEngine
 
 log = logging.getLogger("fr-bot.auto")
 
@@ -163,9 +167,11 @@ class AutomationEngine:
     Emits events via callback for Telegram notifications.
     """
 
-    def __init__(self, paper_engine: PaperEngine, event_callback=None):
+    def __init__(self, paper_engine: PaperEngine, event_callback=None,
+                 spread_engine: Optional[SpreadEngine] = None):
         self._paper = paper_engine
         self._event_callback = event_callback
+        self._spread = spread_engine
         self._state = State.IDLE
         self._enabled = AUTO_MODE
         self._lock = threading.Lock()
@@ -673,12 +679,38 @@ class AutomationEngine:
         return ((p_long - p_short) / p_short) * 100.0
 
     def _get_scan(self) -> List[dict]:
-        """Get latest scan data from disk. Force-scan only if file missing or truly empty.
-        Periodic refresh is handled by bg_scanner, so we don't duplicate."""
+        """Get latest market data. Prefer WS-driven spread_engine signals,
+        fall back to file-based scan."""
+        if self._spread:
+            signals = self._spread.get_all_signals()
+            if signals:
+                # Only return symbols that have both price and funding data
+                now = time.time()
+                win = AUTO_ENTRY_WINDOW_MIN * 60
+                result = []
+                for sym, sig in signals.items():
+                    # Convert signal dict to match old opportunity schema
+                    sig["bybit_mark"] = sig.get("bybit_price", 0)
+                    sig["kucoin_mark"] = sig.get("kucoin_price", 0)
+                    sig["bybit_rate_pct"] = sig.get("bybit_rate_pct", 0)
+                    sig["kucoin_rate_pct"] = sig.get("kucoin_rate_pct", 0)
+                    sig["bybit_next_ts"] = sig.get("bybit_next_ts", 0)
+                    sig["kucoin_next_ts"] = sig.get("kucoin_next_ts", 0)
+                    sig["bybit_interval_h"] = sig.get("bybit_interval_h", 8)
+                    sig["kucoin_interval_h"] = sig.get("kucoin_interval_h", 8)
+                    sig["bybit_action"] = sig.get("bybit_action", "—")
+                    sig["kucoin_action"] = sig.get("kucoin_action", "—")
+                    sig["price"] = sig.get("bybit_price", 0)
+                    sig["spread_pct"] = sig.get("price_spread_pct", 0)
+                    sig["raw_fr_diff"] = sig.get("raw_fr_diff", 0)
+                    result.append(sig)
+                self._last_scan = {"opportunities": result}
+                return result
+
+        # Fallback: file-based scan
         data = read_opportunities()
         opps = data.get("opportunities", [])
         if not opps:
-            # File missing or corrupt — force one scan
             run_scan()
             data = read_opportunities()
             opps = data.get("opportunities", [])

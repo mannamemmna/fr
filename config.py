@@ -35,8 +35,13 @@ KUCOIN_API_PASSPHRASE: str = os.getenv("KUCOIN_API_PASSPHRASE", "")
 LIVE_CONFIRM: bool = os.getenv("LIVE_CONFIRM", "false").lower() in ("true", "1", "yes")
 
 # ─── Auto-scan ───
-# NOTE: auto_engine does its own scanning; this is for the background scanner
+# NOTE: auto_engine does its own scanning; this is for the background scanner (REST fallback)
 AUTO_SCAN_INTERVAL: int = int(os.getenv("AUTO_SCAN_INTERVAL", 60))
+
+# ─── WebSocket ───
+WS_HEARTBEAT_SEC: int = int(os.getenv("WS_HEARTBEAT_SEC", "20"))
+REST_RATE_LIMIT_PER_SEC: int = int(os.getenv("REST_RATE_LIMIT_PER_SEC", "10"))
+DB_PATH: str = str(os.getenv("DB_PATH", "data/fr-bot.db"))
 
 # ─── Leverage ───
 DEFAULT_LEVERAGE: int = int(os.getenv("DEFAULT_LEVERAGE", "2"))
