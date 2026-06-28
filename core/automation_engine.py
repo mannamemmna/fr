@@ -75,7 +75,8 @@ class DelayOrder:
     amount_usd: float = 100.0
     leverage: int = 3
     entry_price_spread: float = 0.0   # Price spread (Bybit–KuCoin mark) at entry %
-    entry_delta: float = 0.0          # Funding rate delta at entry %
+    entry_delta: float = 0.0          # Funding rate delta at entry % (positive)
+    entry_raw_fr_diff: float = 0.0    # Raw funding diff at entry % (can be negative)
     bybit_rate: float = 0.0
     kucoin_rate: float = 0.0
     bybit_next_ts: int = 0
@@ -417,6 +418,7 @@ class AutomationEngine:
                 leverage=AUTO_LEVERAGE,
                 entry_price_spread=price_spread,
                 entry_delta=best["delta_pct"],
+                entry_raw_fr_diff=best.get("raw_fr_diff", 0),
                 bybit_rate=best["bybit_rate_pct"],
                 kucoin_rate=best["kucoin_rate_pct"],
                 bybit_next_ts=best.get("bybit_next_ts") or 0,
@@ -649,18 +651,34 @@ class AutomationEngine:
         entry_delta = live_order.entry_delta if live_order else current_delta
 
         # ── LIVE EXIT: 2 Tahap Sequential ─────────────────────────────────────
-        # Tahap 1: Tunggu Diff FR <= AUTO_LIVE_CLOSE_FUNDING_DIFF
+        # Tahap 1: Tunggu Diff FR <= AUTO_LIVE_CLOSE_FUNDING_DIFF, ATAU FR flip arah
         if not self._funding_threshold_met:
-            if abs(current_delta) <= AUTO_LIVE_CLOSE_FUNDING_DIFF:
+            # Ambil raw_fr_diff dari current scan (bisa negatif)
+            current_raw = current.get("raw_fr_diff", 0) or 0
+            entry_raw = live_order.entry_raw_fr_diff if live_order else current_raw
+
+            # Cek 1: threshold biasa
+            threshold_met = abs(current_delta) <= AUTO_LIVE_CLOSE_FUNDING_DIFF
+            # Cek 2: FR sudah flip arah? (raw_diff berubah sign)
+            flip_met = (entry_raw * current_raw < 0) if entry_raw != 0 else False
+
+            trigger_reason = None
+            if threshold_met and flip_met:
+                trigger_reason = f"Diff FR turun ke `{current_delta:.4f}%` dan arah FR flip (entry: {entry_raw:+.4f}% → now: {current_raw:+.4f}%)"
+            elif threshold_met:
+                trigger_reason = f"Diff FR turun ke `{current_delta:.4f}%` (≤ `{AUTO_LIVE_CLOSE_FUNDING_DIFF}%`)"
+            elif flip_met:
+                trigger_reason = f"Arah FR flip (entry: {entry_raw:+.4f}% → now: {current_raw:+.4f}%)"
+
+            if trigger_reason:
                 self._funding_threshold_met = True
                 log.info(
-                    "LIVE Tahap 1 TERPENUHI: %s Diff FR=%.4f%% <= %.4f%%. Monitoring spread...",
-                    symbol, current_delta, AUTO_LIVE_CLOSE_FUNDING_DIFF
+                    "LIVE Tahap 1 TERPENUHI: %s — %s",
+                    symbol, trigger_reason
                 )
                 self._emit_event(
                     "state_change",
-                    f"📉 *Tahap 1 Terpenuhi* | {symbol}\n\n"
-                    f"Diff FR sudah turun ke `{current_delta:.4f}%` (≤ `{AUTO_LIVE_CLOSE_FUNDING_DIFF}%`)\n"
+                    f"📉 *Tahap 1 Terpenuhi* | {symbol}\n\n{trigger_reason}\n\n"
                     f"🔍 _Sekarang monitoring Price Spread untuk exit..._"
                 )
             else:
