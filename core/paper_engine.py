@@ -220,6 +220,7 @@ class PaperEngine:
             "kucoin_interval_h": opp.get("kucoin_interval_h"),
             "entry_time": started_at,
             "status": "open",
+            "legs_status": {"bybit": "open", "kucoin": "open"},
             "paper": True,
         }
 
@@ -388,6 +389,46 @@ class PaperEngine:
             "position_size": pos.get("position_size", pos.get("amount_usd", 0)),
         }
         self._log_execution({"type": "close", **result, "finished_at": _utcnow_iso()})
+        return result
+
+    def force_close_leg(self, position_id: str, exchange: str) -> Dict[str, Any]:
+        """Simulate one leg being force-closed (margin call / liquidation).
+        
+        Marks the given leg as 'closed' in legs_status. If both legs are now
+        closed, runs full close_position. Returns the position so the caller
+        can close the remaining leg.
+        """
+        with self._lock:
+            pos = next(
+                (p for p in self._positions if p.get("id", "").startswith(position_id)),
+                None,
+            )
+            if not pos:
+                return {"ok": False, "error": "position not found", "position_id": position_id}
+            if pos.get("status") != "open":
+                return {"ok": False, "error": f"position is {pos.get('status')}, not open"}
+            
+            legs = pos.setdefault("legs_status", {"bybit": "open", "kucoin": "open"})
+            exchange = exchange.lower()
+            if exchange not in ("bybit", "kucoin"):
+                return {"ok": False, "error": f"invalid exchange: {exchange}"}
+            if legs.get(exchange) != "open":
+                return {"ok": False, "error": f"{exchange} leg already closed"}
+            
+            legs[exchange] = "closed"
+            self._save_portfolio()
+            
+        result = {
+            "ok": True,
+            "position_id": position_id,
+            "symbol": pos["symbol"],
+            "exchange": exchange,
+            "both_legs_closed": legs.get("bybit") == "closed" and legs.get("kucoin") == "closed",
+            "legs_status": dict(legs),
+            "message": f"{exchange} leg force-closed (simulated margin call)",
+        }
+        log.warning("FORCE CLOSE: %s leg %s — %s", exchange, position_id[:12], pos["symbol"])
+        self._log_execution({"type": "force_close_leg", **result})
         return result
 
     def close_all_positions(self) -> List[Dict[str, Any]]:

@@ -10,10 +10,13 @@ import json
 import time
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
+import logging
 
 import requests
 
 BASE_URL = "https://api.bybit.com"
+
+log = logging.getLogger("bybit_live")
 
 
 def _fmt_qty(qty: float, step: float = 0.001) -> str:
@@ -115,3 +118,18 @@ class BybitLiveClient:
         body = {"category": "linear", "symbol": bybit_symbol, "side": close_side, "orderType": "Market", "qty": _fmt_qty(qty), "reduceOnly": True}
         j = self._request("POST", "/v5/order/create", body=body)
         return {"order_id": j.get("result", {}).get("orderId"), "symbol": bybit_symbol, "side": close_side.lower(), "qty": qty, "raw": j}
+
+    def get_position_size(self, symbol: str, side: str) -> float:
+        """Return current position size for a symbol+side. 0.0 means no position (liquidated/closed)."""
+        bybit_symbol = self.to_symbol(symbol)
+        try:
+            j = self._request("GET", "/v5/position/list", {"category": "linear", "symbol": bybit_symbol})
+            positions = j.get("result", {}).get("list", [])
+            for p in positions:
+                p_side = "sell" if p.get("side") == "Sell" else "buy"
+                if p_side == side.lower():
+                    return abs(float(p.get("size", 0) or 0))
+            return 0.0
+        except Exception:
+            log.exception("Bybit get_position_size failed")
+            return -1.0  # unknown

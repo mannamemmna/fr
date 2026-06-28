@@ -8,10 +8,13 @@ import json
 import time
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
+import logging
 
 import requests
 
 BASE_URL = "https://api-futures.kucoin.com"
+
+log = logging.getLogger("kucoin_live")
 
 
 def _fmt_qty(qty: float, step: float = 1.0) -> str:
@@ -114,3 +117,20 @@ class KuCoinLiveClient:
         }
         j = self._request("POST", "/api/v1/orders", body=body)
         return {"order_id": j.get("data", {}).get("orderId"), "symbol": kc_symbol, "side": close_side, "qty": qty, "raw": j}
+
+    def get_position_size(self, symbol: str, side: str) -> float:
+        """Return current position size. 0.0 means no position (liquidated)."""
+        kc_symbol = self.to_symbol(symbol)
+        try:
+            j = self._request("GET", "/api/v1/positions", {"symbol": kc_symbol})
+            data = j.get("data", {})
+            current_qty = abs(float(data.get("currentQty", 0) or 0))
+            if current_qty == 0:
+                return 0.0
+            pos_side = "sell" if float(data.get("currentQty", 0) or 0) < 0 else "buy"
+            if pos_side == side.lower():
+                return current_qty
+            return 0.0
+        except Exception:
+            log.exception("KuCoin get_position_size failed")
+            return -1.0

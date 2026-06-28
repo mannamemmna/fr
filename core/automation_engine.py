@@ -43,6 +43,9 @@ from config import (
     PAPER_MODE,
     REBALANCE_THRESHOLD,
     REBALANCE_CHECK_INTERVAL_SEC,
+    HEDGE_EMERGENCY_OPEN,
+    HEDGE_CHECK_INTERVAL_SEC,
+    HEDGE_BALANCE_DROP_THRESHOLD,
 )
 from core.scanner import run_scan, read_opportunities
 from core.paper_engine import PaperEngine
@@ -192,6 +195,9 @@ class AutomationEngine:
         self._live_order: Optional[DelayOrder] = None  # order yg sudah masuk LIVE
         self._live_position_id: Optional[str] = None
         self._funding_threshold_met: bool = False   # Tahap 1 LIVE: sudah terpenuhi?
+        self._last_hedge_check: float = 0.0       # Hedge guard throttle
+        self._hedge_triggered: bool = False       # Already emergency-closing
+        self._entry_balance_snapshot: dict = {}   # Balance snapshot saat LIVE entry
         self._last_scan: dict = {}
         self._last_log = time.time()
         self._delay_notified: set = set()   # simpan symbol yg sudah dinotifikasi delay
@@ -583,6 +589,16 @@ class AutomationEngine:
             self._live_position_id = order.position_id
             self._live_order = order
 
+            # Snapshot balance untuk hedge guard
+            summary = self._paper.get_summary()
+            self._entry_balance_snapshot = {
+                "bybit": summary.get("bybit_balance", 0),
+                "kucoin": summary.get("kucoin_balance", 0),
+                "time": time.time(),
+            }
+            self._last_hedge_check = time.time()
+            self._hedge_triggered = False
+
             mins_left = time_left / 60
             self._state = State.LIVE
             log.info("DELAY → LIVE: %s executed, monitoring reversal", order.symbol)
@@ -623,8 +639,74 @@ class AutomationEngine:
             self._live_position_id = None
             self._live_order = None
             self._funding_threshold_met = False
+            self._hedge_triggered = False
+            self._entry_balance_snapshot.clear()
             self._state = State.IDLE
             return
+
+        # ── HEDGE INTEGRITY GUARD ───────────────────────────────────────
+        # Cek apakah salah satu leg sudah mati (margin call / manual close / likuidasi)
+        if HEDGE_EMERGENCY_OPEN and not self._hedge_triggered:
+            now = time.time()
+            if now - self._last_hedge_check >= HEDGE_CHECK_INTERVAL_SEC:
+                self._last_hedge_check = now
+                emergency = False
+                reason = ""
+
+                if PAPER_MODE:
+                    # Paper: cek legs_status di position
+                    legs = pos.get("legs_status", {})
+                    bb_open = legs.get("bybit") == "open"
+                    kc_open = legs.get("kucoin") == "open"
+                    if bb_open and not kc_open:
+                        emergency = True
+                        reason = "KuCoin leg closed, Bybit still open"
+                    elif not bb_open and kc_open:
+                        emergency = True
+                        reason = "Bybit leg closed, KuCoin still open"
+                else:
+                    # Live: cek via exchange API (1 call/exchange per interval)
+                    try:
+                        side_bb = pos.get("side_bybit", "").lower()
+                        side_kc = pos.get("side_kucoin", "").lower()
+                        live_eng = getattr(self, "_live_engine", None)
+                        if live_eng:
+                            status = live_eng.get_position_status(pos["symbol"], side_bb, side_kc)
+                            if status.get("bybit") == "closed" and status.get("kucoin") == "open":
+                                emergency = True
+                                reason = "Bybit position closed (margin call?), KuCoin still open"
+                            elif status.get("kucoin") == "closed" and status.get("bybit") == "open":
+                                emergency = True
+                                reason = "KuCoin position closed (margin call?), Bybit still open"
+                    except Exception:
+                        log.warning("LIVE hedge check failed (API error), skipping this interval")
+
+                if emergency:
+                    self._hedge_triggered = True
+                    log.warning("HEDGE EMERGENCY: %s — %s", pos["symbol"], reason)
+                    self._emit_event(
+                        "state_change",
+                        f"🚨 *HEDGE EMERGENCY* | {pos['symbol']}\n\n"
+                        f"{reason}\n\n"
+                        f"⚡ _Emergency close — menutup leg satunya..._"
+                    )
+                    # Close the full position (remaining leg gets closed too)
+                    result = self._paper.close_position(pos_id)
+                    if result.get("ok"):
+                        self._emit_event(
+                            "close",
+                            f"🚨 *EMERGENCY CLOSE* | {pos['symbol']}\n\n"
+                            f"Posisi ditutup darurat karena ada satu leg yang hilang.\n"
+                            f"Realized PnL: `{result.get('realized_pnl', 0):+.2f} USD`"
+                        )
+                    else:
+                        self._emit_event("error", f"❌ Emergency close failed: {result.get('error', 'unknown')}")
+                    self._live_position_id = None
+                    self._live_order = None
+                    self._funding_threshold_met = False
+                    self._hedge_triggered = False
+                    self._state = State.IDLE
+                    return
 
         # Get current scan for this symbol
         symbol = pos["symbol"]
@@ -705,6 +787,8 @@ class AutomationEngine:
             self._live_position_id = None
             self._live_order = None
             self._funding_threshold_met = False
+            self._hedge_triggered = False
+            self._entry_balance_snapshot.clear()
             self._state = State.IDLE
         else:
             log.debug("LIVE %s: Tahap 2 — menunggu spread %.4f%% >= %.4f%%",

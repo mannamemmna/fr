@@ -71,5 +71,10 @@ REBALANCE_PAPER_DELAY_SEC: int = int(os.getenv("REBALANCE_PAPER_DELAY_SEC", "5")
 REBALANCE_CHECK_INTERVAL_SEC: int = int(os.getenv("REBALANCE_CHECK_INTERVAL_SEC", "60"))
 REBALANCE_AUTO_TRANSFER: bool = os.getenv("REBALANCE_AUTO_TRANSFER", "false").lower() in ("true", "1", "yes")
 
+# ─── Hedge Integrity ───
+HEDGE_EMERGENCY_OPEN: bool = os.getenv("HEDGE_EMERGENCY_OPEN", "true").lower() in ("true", "1", "yes")
+HEDGE_CHECK_INTERVAL_SEC: int = int(os.getenv("HEDGE_CHECK_INTERVAL_SEC", "30"))
+HEDGE_BALANCE_DROP_THRESHOLD: float = float(os.getenv("HEDGE_BALANCE_DROP_THRESHOLD", "0.95"))
+
 # ─── Display ───
 DEFAULT_TOP_N: int = int(os.getenv("DEFAULT_TOP_N", "10"))

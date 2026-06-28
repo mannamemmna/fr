@@ -231,6 +231,32 @@ class LiveEngine:
         with self._lock:
             return [p for p in self._positions if p.get("status") == "open"]
 
+    def get_position_status(self, symbol: str, side_bb: str, side_kc: str) -> Dict[str, str]:
+        """Check if both legs still have open positions on the exchanges.
+        
+        Returns {"bybit": "open"|"closed", "kucoin": "open"|"closed"}.
+        -1.0 from get_position_size means API error (treated conservatively as 'unknown').
+        """
+        bb_size = self.bybit.get_position_size(symbol, side_bb)
+        kc_size = self.kucoin.get_position_size(symbol, side_kc)
+        
+        status = {}
+        if bb_size < 0:
+            status["bybit"] = "unknown"
+        elif bb_size == 0:
+            status["bybit"] = "closed"
+        else:
+            status["bybit"] = "open"
+        
+        if kc_size < 0:
+            status["kucoin"] = "unknown"
+        elif kc_size == 0:
+            status["kucoin"] = "closed"
+        else:
+            status["kucoin"] = "open"
+        
+        return status
+
     def get_closed_positions(self) -> List[Dict[str, Any]]:
         with self._lock:
             return list(self._closed_positions)
