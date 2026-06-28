@@ -19,7 +19,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
-from config import DATA_DIR, PAPER_INITIAL_BALANCE
+from config import DATA_DIR, PAPER_INITIAL_BALANCE, REBALANCE_PAPER_FEE_PCT, REBALANCE_PAPER_DELAY_SEC
 from core.scanner import read_opportunities
 
 log = logging.getLogger("paper_engine")
@@ -52,7 +52,8 @@ class PaperEngine:
     def __init__(self):
         self._lock = threading.RLock()
         self._positions: List[Dict[str, Any]] = []
-        self._balance = PAPER_INITIAL_BALANCE
+        self._balance_bybit = PAPER_INITIAL_BALANCE / 2.0
+        self._balance_kucoin = PAPER_INITIAL_BALANCE / 2.0
         self._realized_pnl = 0.0
         self._total_fees = 0.0
         self._total_funding_pnl = 0.0
@@ -67,7 +68,8 @@ class PaperEngine:
         try:
             with open(STATE_FILE) as f:
                 state = json.load(f)
-            self._balance = float(state.get("balance", PAPER_INITIAL_BALANCE))
+            self._balance_bybit = float(state.get("balance_bybit", PAPER_INITIAL_BALANCE / 2))
+            self._balance_kucoin = float(state.get("balance_kucoin", PAPER_INITIAL_BALANCE / 2))
             self._realized_pnl = float(state.get("realized_pnl", 0))
             self._total_fees = float(state.get("total_fees", 0))
             self._total_funding_pnl = float(state.get("total_funding_pnl", 0))
@@ -78,7 +80,8 @@ class PaperEngine:
 
     def _save_state(self):
         state = {
-            "balance": self._balance,
+            "balance_bybit": self._balance_bybit,
+            "balance_kucoin": self._balance_kucoin,
             "realized_pnl": self._realized_pnl,
             "total_fees": self._total_fees,
             "total_funding_pnl": self._total_funding_pnl,
@@ -152,9 +155,9 @@ class PaperEngine:
         if amount_usd <= 0:
             errors.append("amount must be positive")
 
-        if amount_usd > self._balance:
+        if amount_usd > self.get_balance():
             errors.append(
-                f"insufficient paper balance: need ${amount_usd:.2f} margin, have ${self._balance:.2f}"
+                f"insufficient paper balance: need ${amount_usd:.2f} margin, have ${self.get_balance():.2f}"
             )
 
         # Get current prices from latest scan
@@ -187,7 +190,10 @@ class PaperEngine:
 
         fee_per_leg = position_size * DEFAULT_TAKER_FEE
         fee = fee_per_leg * 2  # both legs
-        self._balance -= amount_usd + fee
+        margin_per_ex = amount_usd / 2.0
+        fee_per_ex = fee / 2.0
+        self._balance_bybit -= margin_per_ex + fee_per_ex
+        self._balance_kucoin -= margin_per_ex + fee_per_ex
         self._total_fees += fee
 
         # Record position
@@ -339,7 +345,12 @@ class PaperEngine:
             pos["total_fee"] = round(total_fee, 8)
             pos["realized_pnl"] = round(realized_pnl, 8)
 
-            self._balance += pos["amount_usd"] + realized_pnl
+            # Return margin proportionally (50/50 split)
+            margin_back = pos["amount_usd"]
+            margin_per_ex = margin_back / 2.0
+            pnl_per_ex = realized_pnl / 2.0
+            self._balance_bybit += margin_per_ex + pnl_per_ex
+            self._balance_kucoin += margin_per_ex + pnl_per_ex
             self._realized_pnl += realized_pnl
             self._total_fees += exit_fee
             self._total_funding_pnl += funding_pnl
@@ -371,7 +382,7 @@ class PaperEngine:
             "fr_paid": round(fr_paid, 2),
             "fr_received": round(fr_received, 2),
             "fees": round(total_fee, 2),
-            "balance_after": round(self._balance, 2),
+            "balance_after": round(self.get_balance(), 2),
             "amount_usd": pos.get("amount_usd", 0),
             "leverage": pos.get("leverage", 1),
             "position_size": pos.get("position_size", pos.get("amount_usd", 0)),
@@ -405,7 +416,16 @@ class PaperEngine:
             return list(self._closed_positions)
 
     def get_balance(self) -> float:
-        return self._balance
+        with self._lock:
+            return self._balance_bybit + self._balance_kucoin
+
+    def get_bybit_balance(self) -> float:
+        with self._lock:
+            return self._balance_bybit
+
+    def get_kucoin_balance(self) -> float:
+        with self._lock:
+            return self._balance_kucoin
 
     def get_summary(self) -> dict:
         """Portfolio summary for /portfolio and /pnl commands."""
@@ -435,7 +455,9 @@ class PaperEngine:
                 unrealized_pnl += pnl_bb + pnl_kc
 
         return {
-            "balance": self._balance,
+            "balance": self.get_balance(),
+            "bybit_balance": self.get_bybit_balance(),
+            "kucoin_balance": self.get_kucoin_balance(),
             "realized_pnl": self._realized_pnl,
             "unrealized_pnl": unrealized_pnl,
             "total_pnl": self._realized_pnl + unrealized_pnl,

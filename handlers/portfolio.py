@@ -25,9 +25,14 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_exposure = summary.get("total_exposure", 0)
 
     if not positions:
+        bb = state.paper_engine.get_bybit_balance() if state.paper_engine else 0
+        kc = state.paper_engine.get_kucoin_balance() if state.paper_engine else 0
         await update.message.reply_text(
             f"📭 *Tidak ada posisi terbuka*\n\n"
-            f"💰 Saldo: `${balance:.2f}`\n"
+            f"💰 *Saldo:*\n"
+            f"├─ Bybit:  `${bb:.2f}`\n"
+            f"├─ KuCoin: `${kc:.2f}`\n"
+            f"└─ Total:  `${bb+kc:.2f}`\n\n"
             f"📈 Total PnL: `{total_pnl:+.2f}`",
             parse_mode="Markdown",
         )
@@ -36,7 +41,10 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [
         f"*💼 Portfolio*",
         "",
-        f"💰 *Saldo:* `${balance:.2f}`",
+        f"💰 *Saldo:*",
+        f"├─ Bybit:  `${summary.get('bybit_balance', 0):.2f}`",
+        f"├─ KuCoin: `${summary.get('kucoin_balance', 0):.2f}`",
+        f"└─ Total:  `${summary.get('balance', 0):.2f}`",
         f"📊 *Terpakai:* `${total_exposure:.2f}` (sebagai margin)",
         f"📈 *Total PnL:* `{total_pnl:+.2f}`",
         f"   ├─ Sudah direalisasi: `{realized:+.2f}`",
@@ -75,7 +83,7 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         funding = p.get("funding_pnl", 0.0)
         fr_paid = p.get("fr_paid", 0.0)
         fr_received = p.get("fr_received", 0.0)
-        
+
         # Ambil jam next payment dari data scan
         next_funding_jam = "—"
         upnl = "—"
@@ -94,7 +102,7 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     dt_wib = dt_utc.astimezone(timezone(timedelta(hours=7)))
                     next_funding_jam = dt_wib.strftime("%H:%M WIB")
                 else:
-                    next_funding_jam = o.get("next_funding", "—").replace("UTC", "WIB") # Fallback lama
+                    next_funding_jam = o.get("next_funding", "—").replace("UTC", "WIB")
 
                 # Ambil mark price terkini untuk current price
                 c_bb = o.get("bybit_mark", 0)
@@ -102,7 +110,7 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if c_bb: current_bb = f"${c_bb:.4f}"
                 if c_kc: current_kc = f"${c_kc:.4f}"
                 break
-        
+
         # Ambil uPnL secara langsung
         for o in opps:
             if o["symbol"].upper() == sym.upper():

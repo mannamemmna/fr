@@ -6,7 +6,7 @@ import time
 from telegram import Update
 from telegram.ext import ContextTypes
 
-from config import PAPER_MODE, AUTO_SCAN_INTERVAL, AUTO_MONITOR_INTERVAL, AUTO_ENTRY_WINDOW_MIN
+from config import PAPER_MODE, AUTO_SCAN_INTERVAL, AUTO_MONITOR_INTERVAL, AUTO_ENTRY_WINDOW_MIN, REBALANCE_THRESHOLD
 from core.scanner import read_opportunities
 import handlers.state as state
 
@@ -73,6 +73,18 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 mins = int((next_ts - now) / 60)
                 next_funding = f"~{mins} menit"
 
+    # ── Rebalance info ──
+    rebalance_line = ""
+    if state.auto_engine and state.auto_engine._rebalance_engine and state.paper_engine:
+        rb = state.auto_engine._rebalance_engine.get_status()
+        bb_cfg = state.paper_engine.get_bybit_balance()
+        kc_cfg = state.paper_engine.get_kucoin_balance()
+        rebalance_line = (
+            f"⚖️ Balance: Bybit `${bb_cfg:.2f}` ({rb['ratio_bybit']:.0f}%)"
+            f" | KuCoin `${kc_cfg:.2f}` ({rb['ratio_kucoin']:.0f}%)"
+            f" — {'🟢 Seimbang' if rb['is_balanced'] else '🔴 Tidak Seimbang'}"
+        )
+
     lines = [
         "*🤖 FR Bot Status*",
         "",
@@ -90,6 +102,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         eng_detail,
         f"🔹 Window entry: {AUTO_ENTRY_WINDOW_MIN} menit sebelum funding",
         "",
+        rebalance_line,
     ]
 
     if open_positions:

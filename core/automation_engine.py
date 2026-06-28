@@ -41,9 +41,12 @@ from config import (
     AUTO_DELAY_ENTRY_PRICE_SPREAD,
     AUTO_LIVE_CLOSE_FUNDING_DIFF, AUTO_LIVE_CLOSE_PRICE_SPREAD,
     PAPER_MODE,
+    REBALANCE_THRESHOLD,
+    REBALANCE_CHECK_INTERVAL_SEC,
 )
 from core.scanner import run_scan, read_opportunities
 from core.paper_engine import PaperEngine
+from core.rebalance_engine import RebalanceEngine
 from core.spread_engine import SpreadEngine
 from core.market_cache import get_price_cache, get_funding_cache
 
@@ -54,6 +57,7 @@ log = logging.getLogger("fr-bot.auto")
 
 class State(Enum):
     IDLE = "idle"
+    REBALANCING = "rebalancing"
     LOOKING = "looking"
     DELAY = "delay"
     LIVE = "live"
@@ -180,6 +184,7 @@ class AutomationEngine:
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._notify_chat_id: Optional[str] = None
+        self._rebalance_engine: Optional[RebalanceEngine] = None
 
         # Current state data
         self._delay_orders: List[DelayOrder] = []   # list pending delay orders (multi-position support)
@@ -256,6 +261,8 @@ class AutomationEngine:
 
         if state == State.IDLE:
             self._tick_idle(now)
+        elif state == State.REBALANCING:
+            self._tick_rebalancing(now)
         elif state == State.LOOKING:
             self._tick_looking(now)
         elif state == State.DELAY:
@@ -266,7 +273,24 @@ class AutomationEngine:
     # ─── IDLE ──────────────────────────────────────────────────────────
 
     def _tick_idle(self, now: float):
-        """Wait for upcoming funding window within AUTO_ENTRY_WINDOW_MIN minutes."""
+        """Wait for upcoming funding window within AUTO_ENTRY_WINDOW_MIN minutes.
+        
+        Balance check runs first — if needs rebalance and no open positions,
+        switch to REBALANCING.
+        """
+        # ── Cek balance sebelum apapun ──────────────────────────────
+        if self._rebalance_engine and self._rebalance_engine.enabled:
+            status = self._rebalance_engine.check_balance()
+            if status.needs_rebalance:
+                open_positions = self._paper.get_open_positions()
+                if not open_positions and not self._delay_orders:
+                    # Tidak ada posisi & delay order → mulai rebalance
+                    self._start_rebalance(status, now)
+                    return
+                elif open_positions or self._delay_orders:
+                    log.debug("IDLE: balance tidak seimbang tapi ada posisi terbuka, tunggu...")
+                    return
+        # ── Sisa logika IDLE yang sudah ada ─────────────────────────
         scan = self._get_scan()
         if not scan:
             return
@@ -668,6 +692,89 @@ class AutomationEngine:
             log.debug("LIVE %s: Tahap 2 — menunggu spread %.4f%% >= %.4f%%",
                       symbol, price_spread_now, AUTO_LIVE_CLOSE_PRICE_SPREAD)
 
+    # ─── REBALANCING ───────────────────────────────────────────────────
+
+    def _start_rebalance(self, status, now: float):
+        """Mulai proses rebalance dan pindah ke state REBALANCING."""
+        st = status
+        self._state = State.REBALANCING
+        self._rebalance_engine.start_rebalance(st)
+
+        bb_pct = round(st.ratio_bybit * 100, 1)
+        kc_pct = round(st.ratio_kucoin * 100, 1)
+
+        if PAPER_MODE:
+            msg = (
+                f"⚖️ *AUTO REBALANCE — PAPER MODE*\n\n"
+                f"Saldo tidak seimbang. Memulai simulasi transfer...\n\n"
+                f"├ Bybit:  `${st.bybit_balance:.2f}` ({bb_pct}%)\n"
+                f"├ KuCoin: `${st.kucoin_balance:.2f}` ({kc_pct}%)\n"
+                f"└ Total:  `${st.total:.2f}`\n\n"
+                f"Transfer: `${st.amount_to_transfer:.2f}` dari *{st.from_exchange}* → *{st.to_exchange}*\n"
+                f"Fee simulasi: `${st.amount_to_transfer * REBALANCE_THRESHOLD * 0.01:.2f}` (0.1%)\n"
+                f"Estimasi selesai: ~5 detik\n\n"
+                f"⏸ _Bot menahan trading hingga saldo seimbang..._"
+            )
+        else:
+            msg = (
+                f"⚖️ *SALDO TIDAK SEIMBANG — AKSI DIPERLUKAN*\n\n"
+                f"├ Bybit:  `${st.bybit_balance:.2f}` ({bb_pct}%)\n"
+                f"├ KuCoin: `${st.kucoin_balance:.2f}` ({kc_pct}%)\n"
+                f"└ Total:  `${st.total:.2f}`\n\n"
+                f"📋 *Transfer Manual Diperlukan:*\n"
+                f"Transfer `${st.amount_to_transfer:.2f}` USDT dari *{st.from_exchange}* ke *{st.to_exchange}*\n\n"
+                f"⏸ _Bot TIDAK AKAN trading hingga saldo seimbang._\n"
+                f"_Cek saldo otomatis tiap {REBALANCE_CHECK_INTERVAL_SEC} detik._\n\n"
+                f"_Gunakan /rebalance untuk cek status terkini._"
+            )
+
+        self._emit_event("rebalance_start", msg)
+        log.info("IDLE → REBALANCING: %.2f USDT %s → %s",
+                 st.amount_to_transfer, st.from_exchange, st.to_exchange)
+
+        # Force-save state so balance change is persisted immediately
+        if PAPER_MODE:
+            self._paper._save_state()
+
+    def _tick_rebalancing(self, now: float):
+        """Monitor proses rebalance."""
+        if not self._rebalance_engine or not self._rebalance_engine.enabled:
+            self._state = State.IDLE
+            return
+
+        result = self._rebalance_engine.tick(now)
+
+        if result == "done":
+            st = self._rebalance_engine.check_balance()
+            bb_pct = round(st.ratio_bybit * 100, 1)
+            kc_pct = round(st.ratio_kucoin * 100, 1)
+
+            if PAPER_MODE:
+                msg = (
+                    f"✅ *REBALANCE SELESAI — PAPER MODE*\n\n"
+                    f"├ Bybit:  `${st.bybit_balance:.2f}` ({bb_pct}%)\n"
+                    f"├ KuCoin: `${st.kucoin_balance:.2f}` ({kc_pct}%)\n"
+                    f"└ Total:  `${st.total:.2f}`\n\n"
+                    f"🟢 _Bot kembali aktif mencari peluang..._"
+                )
+            else:
+                msg = (
+                    f"✅ *SALDO SEIMBANG — TRADING DILANJUTKAN*\n\n"
+                    f"├ Bybit:  `${st.bybit_balance:.2f}` ({bb_pct}%)\n"
+                    f"├ KuCoin: `${st.kucoin_balance:.2f}` ({kc_pct}%)\n"
+                    f"└ Total:  `${st.total:.2f}`\n\n"
+                    f"🟢 _Bot kembali aktif mencari peluang..._"
+                )
+
+            self._emit_event("rebalance_done", msg)
+            log.info("REBALANCING → IDLE: selesai. Bybit=%.2f KuCoin=%.2f",
+                     st.bybit_balance, st.kucoin_balance)
+            self._state = State.IDLE
+        elif result == "failed":
+            self._emit_event("rebalance_failed", "🔴 *REBALANCE GAGAL* — kembali IDLE")
+            self._state = State.IDLE
+        # result == "waiting" → stay REBALANCING, do nothing
+
     # ─── Helpers ────────────────────────────────────────────────────────
 
     def _calculate_price_spread(self, opp: dict, side_bb: str, side_kc: str) -> float:
@@ -750,6 +857,7 @@ class AutomationEngine:
         """Return current automation status for display."""
         state_info = {
             State.IDLE: "⏳ Waiting for funding window…",
+            State.REBALANCING: "⚖️ Rebalancing — menunggu transfer selesai",
             State.LOOKING: "🔍 Scanning for best pair…",
             State.DELAY: "⏳ Delay order pending — monitoring spread…",
             State.LIVE: "📈 Position live — monitoring reversal…",
@@ -776,5 +884,15 @@ class AutomationEngine:
 
         if self._live_position_id:
             status["live_position"] = self._live_position_id[:12]
+
+        if self._state == State.REBALANCING and self._rebalance_engine:
+            rb = self._rebalance_engine.get_status()
+            status["rebalancing"] = {
+                "bybit": rb["bybit_balance"],
+                "kucoin": rb["kucoin_balance"],
+                "from": rb["from_exchange"],
+                "to": rb["to_exchange"],
+                "amount": rb["amount_to_transfer"],
+            }
 
         return status

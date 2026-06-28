@@ -64,5 +64,12 @@ AUTO_PREFER_SAME_INTERVAL: bool = os.getenv("AUTO_PREFER_SAME_INTERVAL", "true")
 # Auto-close all open paper positions on bot restart (prevents unmonitored floating)
 AUTO_CLOSE_ON_RESTART: bool = os.getenv("AUTO_CLOSE_ON_RESTART", "true").lower() in ("true", "1", "yes")
 
+# ─── Rebalance ───
+REBALANCE_THRESHOLD: float = float(os.getenv("REBALANCE_THRESHOLD", "0.40"))
+REBALANCE_PAPER_FEE_PCT: float = float(os.getenv("REBALANCE_PAPER_FEE_PCT", "0.001"))
+REBALANCE_PAPER_DELAY_SEC: int = int(os.getenv("REBALANCE_PAPER_DELAY_SEC", "5"))
+REBALANCE_CHECK_INTERVAL_SEC: int = int(os.getenv("REBALANCE_CHECK_INTERVAL_SEC", "60"))
+REBALANCE_AUTO_TRANSFER: bool = os.getenv("REBALANCE_AUTO_TRANSFER", "false").lower() in ("true", "1", "yes")
+
 # ─── Display ───
 DEFAULT_TOP_N: int = int(os.getenv("DEFAULT_TOP_N", "10"))

@@ -17,6 +17,7 @@ from config import (
 from core.paper_engine import PaperEngine
 from core.live_engine import LiveEngine, LiveModeLockedError, MissingLiveCredentialsError
 from core.automation_engine import AutomationEngine, AutoEvent
+from core.rebalance_engine import RebalanceEngine
 from core.bg_scanner import start_bg_scanner
 from core.scheduler import register_jobs
 from core.market_cache import get_price_cache, get_funding_cache
@@ -39,6 +40,7 @@ from handlers.auto import cmd_auto
 from handlers.health import cmd_health
 from handlers.help import cmd_help
 from handlers.pair import cmd_pair
+from handlers.rebalance import cmd_rebalance
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -159,6 +161,8 @@ def main():
             event_callback=_on_auto_event,
             spread_engine=state.spread_engine,
         )
+        # Inject rebalance engine
+        state.auto_engine._rebalance_engine = RebalanceEngine(state.paper_engine, paper_mode=PAPER_MODE)
         state.auto_engine.start()
         if NOTIFY_CHAT_ID:
             state._notify_chat_id = NOTIFY_CHAT_ID
@@ -182,6 +186,7 @@ def main():
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("pair", cmd_pair))
+    app.add_handler(CommandHandler("rebalance", cmd_rebalance))
  
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
         import telegram.error as _te
