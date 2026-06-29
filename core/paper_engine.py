@@ -63,22 +63,29 @@ class PaperEngine:
     # ─── State Persistence ────────────────────────────────────────────────
 
     def _load_state(self):
-        if not os.path.exists(STATE_FILE):
-            return
-        try:
-            with open(STATE_FILE) as f:
-                state = json.load(f)
-            self._balance_bybit = float(state.get("balance_bybit", PAPER_INITIAL_BALANCE / 2))
-            self._balance_kucoin = float(state.get("balance_kucoin", PAPER_INITIAL_BALANCE / 2))
-            self._realized_pnl = float(state.get("realized_pnl", 0))
-            self._total_fees = float(state.get("total_fees", 0))
-            self._total_funding_pnl = float(state.get("total_funding_pnl", 0))
-        except (json.JSONDecodeError, OSError, ValueError):
-            pass
+        # Try combined format first (post-fix), then fall back to legacy split files
+        if os.path.exists(STATE_FILE):
+            try:
+                with open(STATE_FILE) as f:
+                    state = json.load(f)
+                self._balance_bybit = float(state.get("balance_bybit", PAPER_INITIAL_BALANCE / 2))
+                self._balance_kucoin = float(state.get("balance_kucoin", PAPER_INITIAL_BALANCE / 2))
+                self._realized_pnl = float(state.get("realized_pnl", 0))
+                self._total_fees = float(state.get("total_fees", 0))
+                self._total_funding_pnl = float(state.get("total_funding_pnl", 0))
+                # Combined format: positions stored in same file
+                if "positions" in state:
+                    self._positions = state.get("positions", [])
+                    self._closed_positions = state.get("closed_positions", [])
+                    return
+            except (json.JSONDecodeError, OSError, ValueError):
+                pass
 
+        # Legacy: load portfolio separately
         self._load_portfolio()
 
     def _save_state(self):
+        """Legacy single-file save (balance only). Kept for compatibility."""
         state = {
             "balance_bybit": self._balance_bybit,
             "balance_kucoin": self._balance_kucoin,
@@ -87,8 +94,10 @@ class PaperEngine:
             "total_funding_pnl": self._total_funding_pnl,
             "saved_at": _utcnow_iso(),
         }
-        with open(STATE_FILE, "w") as f:
+        tmp = STATE_FILE + ".tmp"
+        with open(tmp, "w") as f:
             json.dump(state, f, indent=2)
+        os.replace(tmp, STATE_FILE)
 
     def _load_portfolio(self):
         if not os.path.exists(PORTFOLIO_FILE):
@@ -114,6 +123,27 @@ class PaperEngine:
             with open(tmp, "w") as f:
                 json.dump(data, f, indent=2)
             os.replace(tmp, PORTFOLIO_FILE)
+
+    def _save_all(self):
+        """Atomic save of both portfolio + state in a single file.
+
+        Prevents desync if the bot crashes between two separate writes.
+        """
+        with self._lock:
+            data = {
+                "balance_bybit": self._balance_bybit,
+                "balance_kucoin": self._balance_kucoin,
+                "realized_pnl": self._realized_pnl,
+                "total_fees": self._total_fees,
+                "total_funding_pnl": self._total_funding_pnl,
+                "positions": self._positions,
+                "closed_positions": self._closed_positions,
+                "saved_at": _utcnow_iso(),
+            }
+            tmp = STATE_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp, STATE_FILE)
 
     def _log_execution(self, entry: dict):
         with open(EXEC_LOG_FILE, "a") as f:
@@ -226,8 +256,7 @@ class PaperEngine:
 
         with self._lock:
             self._positions.append(position)
-            self._save_portfolio()
-            self._save_state()
+            self._save_all()
 
         result = {
             "task_id": task_id,
@@ -267,6 +296,9 @@ class PaperEngine:
         # Get current prices
         opp = self._get_opportunity(pos["symbol"])
         if not opp:
+            with self._lock:
+                pos["status"] = "open"
+                self._save_portfolio()
             return {
                 "ok": False,
                 "error": f"cannot get current prices for {pos['symbol']}",
@@ -318,11 +350,21 @@ class PaperEngine:
         # Est: rate_leg * position_size * (hours_held / interval_hours)
         raw_bb = entry_rate_bb * position_size * (hours_held / max(bb_iv, 1))
         raw_kc = entry_rate_kc * position_size * (hours_held / max(kc_iv, 1))
-        # SHORT → receive FR / LONG → pay FR
-        fr_paid_bb = 0.0 if pos["side_bybit"] == "sell" else raw_bb
-        fr_received_bb = raw_bb if pos["side_bybit"] == "sell" else 0.0
-        fr_paid_kc = 0.0 if pos["side_kucoin"] == "sell" else raw_kc
-        fr_received_kc = raw_kc if pos["side_kucoin"] == "sell" else 0.0
+        # Funding PnL breakdown — correct for both positive AND negative FR:
+        #   FR positif: SHORT receive, LONG pay
+        #   FR negatif: SHORT pay,    LONG receive
+        if pos["side_bybit"] == "sell":   # SHORT
+            fr_received_bb = max(raw_bb, 0)
+            fr_paid_bb     = max(-raw_bb, 0)
+        else:                              # LONG
+            fr_paid_bb     = max(raw_bb, 0)
+            fr_received_bb = max(-raw_bb, 0)
+        if pos["side_kucoin"] == "sell":   # SHORT
+            fr_received_kc = max(raw_kc, 0)
+            fr_paid_kc     = max(-raw_kc, 0)
+        else:                              # LONG
+            fr_paid_kc     = max(raw_kc, 0)
+            fr_received_kc = max(-raw_kc, 0)
         fr_paid = fr_paid_bb + fr_paid_kc
         fr_received = fr_received_bb + fr_received_kc
         funding_pnl = fr_received - fr_paid
@@ -360,8 +402,7 @@ class PaperEngine:
             self._positions = [p for p in self._positions if p["id"] != pos["id"]]
             self._closed_positions.append(pos)
 
-            self._save_portfolio()
-            self._save_state()
+            self._save_all()
 
         result = {
             "ok": True,
@@ -509,4 +550,6 @@ class PaperEngine:
             "passed_funding_cycles": sum(
                 1 for c in self._closed_positions if abs(c.get("funding_pnl", 0)) > 0
             ),
+            "total_fees": round(self._total_fees, 2),
+            "total_funding_pnl": round(self._total_funding_pnl, 2),
         }

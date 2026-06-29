@@ -901,6 +901,9 @@ class AutomationEngine:
                     sig = self._spread.compute_signal(sym)
                     if not sig:
                         continue
+                    # Normalize symbol to base format (e.g. "BTC/USDT:USDT" → "BTC")
+                    # to match file-path schema used by scanner/paper_engine
+                    sig["symbol"] = sym.split("/")[0]
                     # Convert signal dict to match old opportunity schema
                     sig["bybit_mark"] = sig.get("bybit_price", 0)
                     sig["kucoin_mark"] = sig.get("kucoin_price", 0)

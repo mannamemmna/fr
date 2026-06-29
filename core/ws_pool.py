@@ -314,7 +314,11 @@ class KuCoinWS(WSConnection):
                 if fr is not None:
                     npr = _safe_float(data.get("predictedFundingFeeRate")) or fr
                     nft = _safe_int(data.get("nextFundingRateTime"))
-                    interval_h = (nft - _safe_int(data.get("ts", 0))) / 3600000 if nft else 8
+                    # Bug fix: jangan hitung interval dari time-to-next-payment.
+                    # Gunakan interval_h yang sudah ada dari REST scan (fundingRateGranularity).
+                    # Fallback ke 8 jika belum ada data sebelumnya.
+                    existing = self._funding_cache.get(unified, "kucoin")
+                    interval_h = existing.get("interval_h", 8) if existing else 8
                     self._funding_cache.update(
                         "kucoin", unified, fr, npr, nft, max(int(interval_h), 1),
                     )
