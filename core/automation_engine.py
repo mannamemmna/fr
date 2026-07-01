@@ -23,7 +23,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from enum import Enum
 from typing import List, Optional
 
@@ -102,6 +102,7 @@ class DelayOrder:
     kucoin_rate: float = 0.0
     bybit_next_ts: int = 0
     kucoin_next_ts: int = 0
+    dominant_payment_ts: int = 0      # Timestamp dominant exchange payment (anchor exit)
     bybit_interval_h: int = 0
     kucoin_interval_h: int = 0
     created_at: float = 0.0
@@ -442,6 +443,7 @@ class AutomationEngine:
                 kucoin_next_ts=best.get("kucoin_next_ts") or 0,
                 bybit_interval_h=bb_iv,
                 kucoin_interval_h=kc_iv,
+                dominant_payment_ts=_dominant_exchange_ts(best),
             )
             self._delay_orders.append(delay_order)
 
@@ -731,6 +733,15 @@ class AutomationEngine:
         if not current:
             return  # No data yet, keep monitoring
 
+        # ── Cek interval REAL-TIME dari scan (via WS cache, 0 REST) ────────
+        bb_iv = current.get("bybit_interval_h", 0) or 0
+        kc_iv = current.get("kucoin_interval_h", 0) or 0
+        intervals_same = (bb_iv == kc_iv) and bb_iv > 0
+
+        # ── LIVE EXIT: 2 jalur tergantung interval ────────────────────────
+        #   Jalur A (interval beda): exit after dominant payment + safety
+        #   Jalur B (interval sama): existing FR decay + spread
+
         # 1. Hitung Price Spread: ((P_Long - P_Short) / P_Short * 100)
         side_bb = pos.get("side_bybit", "").lower()
         side_kc = pos.get("side_kucoin", "").lower()
@@ -743,48 +754,64 @@ class AutomationEngine:
         live_order = self._live_order
         entry_delta = live_order.entry_delta if live_order else current_delta
 
-        # ── LIVE EXIT: 2 Tahap Sequential ─────────────────────────────────────
-        # Tahap 1: Tunggu Diff FR <= AUTO_LIVE_CLOSE_FUNDING_DIFF, ATAU FR flip arah
-        if not self._funding_threshold_met:
-            # Ambil raw_fr_diff dari current scan (bisa negatif)
-            current_raw = current.get("raw_fr_diff", 0) or 0
-            entry_raw = live_order.entry_raw_fr_diff if live_order else current_raw
+        # ── LIVE EXIT: 2 Jalur tergantung interval ─────────────────────────
+        #   Jalur A (interval beda): exit after dominant payment + safety
+        #   Jalur B (interval sama): existing FR decay + spread
+        if intervals_same:
+            self._tick_live_same_interval(now, pos_id, pos, current, current_delta, price_spread_now,
+                                          entry_spread, current_spread, entry_delta, live_order, symbol)
+        else:
+            self._tick_live_diff_interval(now, pos_id, pos, current, price_spread_now,
+                                          entry_spread, current_spread, entry_delta, live_order, symbol)
 
-            # Cek 1: threshold biasa
-            threshold_met = abs(current_delta) <= AUTO_LIVE_CLOSE_FUNDING_DIFF
-            # Cek 2: FR sudah flip arah? (raw_diff berubah sign)
-            flip_met = (entry_raw * current_raw < 0) if entry_raw != 0 else False
+    # ─── LIVE — Jalur A: Interval BEDA ──────────────────────────────────
 
-            trigger_reason = None
-            if threshold_met and flip_met:
-                trigger_reason = f"Diff FR turun ke `{current_delta:.4f}%` dan arah FR flip (entry: {entry_raw:+.4f}% → now: {current_raw:+.4f}%)"
-            elif threshold_met:
-                trigger_reason = f"Diff FR turun ke `{current_delta:.4f}%` (≤ `{AUTO_LIVE_CLOSE_FUNDING_DIFF}%`)"
-            elif flip_met:
-                trigger_reason = f"Arah FR flip (entry: {entry_raw:+.4f}% → now: {current_raw:+.4f}%)"
+    def _tick_live_diff_interval(self, now, pos_id, pos, current, price_spread_now,
+                                  entry_spread, current_spread, entry_delta, live_order, symbol):
+        """Exit after dominant exchange payment + safety check on spread slippage."""
+        EXIT_AFTER_PAYMENT_SEC = 300  # 5 menit setelah payment
 
-            if trigger_reason:
-                self._funding_threshold_met = True
-                log.info(
-                    "LIVE Tahap 1 TERPENUHI: %s — %s",
-                    symbol, trigger_reason
-                )
-                self._emit_event(
-                    "state_change",
-                    f"📉 *Tahap 1 Terpenuhi* | {symbol}\n\n{trigger_reason}\n\n"
-                    f"🔍 _Sekarang monitoring Price Spread untuk exit..._"
-                )
+        # Ambil dominant_payment_ts dari live_order
+        dominant_ts = live_order.dominant_payment_ts if live_order else 0
+
+        # Hitung selisih spread dari entry (slippage safety)
+        spread_slippage = price_spread_now - live_order.entry_price_spread if live_order else 0
+        MAX_SPREAD_SLIPPAGE = 0.5  # toleransi spread memburuk 0.5%
+
+        # ── CONDITION 1: Payment sudah lewat + 5 menit? ──────────────────
+        payment_passed = dominant_ts > 0 and now >= dominant_ts + EXIT_AFTER_PAYMENT_SEC
+
+        # ── CONDITION 2: Spread safety — jangan exit kalau spread terlalu jelek ──
+        spread_ok = spread_slippage >= -MAX_SPREAD_SLIPPAGE
+
+        # ── CONDITION 3: FR decay / flip (existing backup) ──────────────
+        current_raw = current.get("raw_fr_diff", 0) or 0
+        entry_raw = live_order.entry_raw_fr_diff if live_order else 0
+        current_delta = current.get("delta_pct", 0) or 0
+        threshold_met = abs(current_delta) <= AUTO_LIVE_CLOSE_FUNDING_DIFF
+        flip_met = (entry_raw * current_raw < 0) if entry_raw != 0 else False
+        fr_ready = threshold_met or flip_met
+
+        # ── DECISION ────────────────────────────────────────────────────
+        should_exit = False
+        reason = ""
+
+        if payment_passed and spread_ok:
+            should_exit = True
+            reason = f"Payment lewat + spread aman"
+        elif payment_passed and not spread_ok:
+            log.info("LIVE %s: payment lewat tapi spread memburuk %.2f%% (toleransi %.1f%%), tunggu...",
+                     symbol, spread_slippage, MAX_SPREAD_SLIPPAGE)
+        elif fr_ready:
+            should_exit = True
+            if threshold_met:
+                reason = f"Diff FR turun ke `{current_delta:.4f}%`"
             else:
-                log.debug("LIVE %s: menunggu Tahap 1 — Diff FR=%.4f%% (target<=%.4f%%)",
-                          symbol, current_delta, AUTO_LIVE_CLOSE_FUNDING_DIFF)
-            return
+                reason = "Arah FR flip"
 
-        # Tahap 2: Setelah Tahap 1, close jika Price Spread >= AUTO_LIVE_CLOSE_PRICE_SPREAD
-        if price_spread_now >= AUTO_LIVE_CLOSE_PRICE_SPREAD:
-            log.info(
-                "LIVE Tahap 2 TERPENUHI → CLOSE: %s Price Spread=%.4f%% >= %.4f%%",
-                symbol, price_spread_now, AUTO_LIVE_CLOSE_PRICE_SPREAD
-            )
+        # ── EXECUTE ─────────────────────────────────────────────────────
+        if should_exit:
+            log.info("LIVE DIFF → CLOSE: %s — %s", symbol, reason)
             if PAPER_MODE:
                 result = self._paper.close_position(pos_id)
             else:
@@ -802,7 +829,70 @@ class AutomationEngine:
             self._entry_balance_snapshot.clear()
             self._state = State.IDLE
         else:
-            log.debug("LIVE %s: Tahap 2 — menunggu spread %.4f%% >= %.4f%%",
+            # Log status setiap 60 detik
+            if now - self._last_log > 60:
+                dom_str = f"Payment +{EXIT_AFTER_PAYMENT_SEC//60}m di {datetime.fromtimestamp(dominant_ts, tz=timezone(timedelta(hours=7))).strftime('%H:%M WIB')}" if dominant_ts else "N/A"
+                log.info("LIVE DIFF %s: spread=%.4f%% delta=%.4f%% %s",
+                         symbol, price_spread_now, current_delta, dom_str)
+                self._last_log = now
+
+    # ─── LIVE — Jalur B: Interval SAMA ──────────────────────────────────
+
+    def _tick_live_same_interval(self, now, pos_id, pos, current, current_delta, price_spread_now,
+                                  entry_spread, current_spread, entry_delta, live_order, symbol):
+        """Existing 2-tahap exit: FR decay → spread positive."""
+        # ── Tahap 1: FR decay / flip ──
+        if not self._funding_threshold_met:
+            current_raw = current.get("raw_fr_diff", 0) or 0
+            entry_raw = live_order.entry_raw_fr_diff if live_order else current_raw
+            threshold_met = abs(current_delta) <= AUTO_LIVE_CLOSE_FUNDING_DIFF
+            flip_met = (entry_raw * current_raw < 0) if entry_raw != 0 else False
+
+            trigger_reason = None
+            if threshold_met or flip_met:
+                if threshold_met and flip_met:
+                    trigger_reason = f"Diff FR turun ke `{current_delta:.4f}%` dan arah FR flip"
+                elif threshold_met:
+                    trigger_reason = f"Diff FR turun ke `{current_delta:.4f}%` (≤ `{AUTO_LIVE_CLOSE_FUNDING_DIFF}%`)"
+                elif flip_met:
+                    trigger_reason = "Arah FR flip"
+
+            if trigger_reason:
+                self._funding_threshold_met = True
+                log.info("LIVE SAME Tahap 1: %s — %s", symbol, trigger_reason)
+                self._emit_event(
+                    "state_change",
+                    f"📉 *Tahap 1 Terpenuhi* | {symbol}\n\n{trigger_reason}\n\n"
+                    f"🔍 _Sekarang monitoring Price Spread untuk exit..._"
+                )
+                return
+            else:
+                log.debug("LIVE SAME %s: tunggu Tahap 1 — Diff FR=%.4f%% (target≤%.4f%%)",
+                          symbol, current_delta, AUTO_LIVE_CLOSE_FUNDING_DIFF)
+            return
+
+        # ── Tahap 2: Price Spread positive → close ──
+        if price_spread_now >= AUTO_LIVE_CLOSE_PRICE_SPREAD:
+            log.info("LIVE SAME Tahap 2 → CLOSE: %s spread=%.4f%% ≥ %.4f%%",
+                     symbol, price_spread_now, AUTO_LIVE_CLOSE_PRICE_SPREAD)
+            if PAPER_MODE:
+                result = self._paper.close_position(pos_id)
+            else:
+                log.error("Live close not yet implemented")
+                return
+
+            self._emit_event(
+                "close",
+                _format_trade_summary(result, symbol, entry_spread, current_spread, entry_delta, current_delta),
+            )
+            self._live_position_id = None
+            self._live_order = None
+            self._funding_threshold_met = False
+            self._hedge_triggered = False
+            self._entry_balance_snapshot.clear()
+            self._state = State.IDLE
+        else:
+            log.debug("LIVE SAME %s: Tahap 2 — tunggu spread %.4f%% ≥ %.4f%%",
                       symbol, price_spread_now, AUTO_LIVE_CLOSE_PRICE_SPREAD)
 
     # ─── REBALANCING ───────────────────────────────────────────────────
