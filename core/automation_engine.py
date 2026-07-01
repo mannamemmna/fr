@@ -9,7 +9,7 @@ State machine that runs in a background thread:
 Rules:
 - Entry window: AUTO_ENTRY_WINDOW_MIN minutes before funding payment
 - Max positions: AUTO_MAX_POSITIONS (default 1)
-- Entry timing based on SHORT exchange's next funding timestamp
+- Entry timing based on dominant exchange's next funding timestamp (abs FR)
 - Auto close on funding reversal
 - Delay order: cancel if reversal detected, scan another pair
 - Leverage: AUTO_LEVERAGE (default 3x)
@@ -54,19 +54,21 @@ from core.market_cache import get_price_cache, get_funding_cache
 log = logging.getLogger("fr-bot.auto")
 
 
-def _short_exchange_ts(opp: dict) -> int:
-    """Return next funding timestamp of the SHORT (higher-FR) exchange.
+def _dominant_exchange_ts(opp: dict) -> int:
+    """Return next funding timestamp of the DOMINANT exchange (abs(FR) terbesar).
 
-    The entry window is anchored to the exchange where we hold the SHORT
-    position — the one paying the higher funding rate. This ensures we are
-    positioned 30 min before that exchange's actual payment event.
+    Entry window di-anchor ke exchange dengan abs(FR) terbesar — tempat kita
+    mau dapet receive terbesar. Untuk FR positif → SHORT exchange (receive).
+    Untuk FR negatif → LONG exchange (receive saat FR negatif).
+    Ini memastikan entry tepat 30 menit sebelum payment yang paling penting.
 
     Returns 0 if direction is FLAT or timestamps are missing.
     """
-    bybit_action = opp.get("bybit_action", "—")
-    if bybit_action == "SHORT":
+    bb_rate = opp.get("bybit_rate_pct", 0) / 100.0
+    kc_rate = opp.get("kucoin_rate_pct", 0) / 100.0
+    if abs(bb_rate) > abs(kc_rate):
         return int(opp.get("bybit_next_ts", 0) or 0)
-    if opp.get("kucoin_action", "—") == "SHORT":
+    if abs(kc_rate) > abs(bb_rate):
         return int(opp.get("kucoin_next_ts", 0) or 0)
     return 0
 
@@ -322,7 +324,7 @@ class AutomationEngine:
         window_sec = AUTO_ENTRY_WINDOW_MIN * 60
         candidates = []
         for opp in scan:
-            trigger_ts = _short_exchange_ts(opp)
+            trigger_ts = _dominant_exchange_ts(opp)
             if trigger_ts <= 0:
                 continue
             time_to_funding = trigger_ts - now
@@ -336,8 +338,8 @@ class AutomationEngine:
                 self._last_log = now
             return
 
-        # Sort by SHORT exchange's funding time (closest first), then take best delta
-        candidates.sort(key=lambda o: _short_exchange_ts(o))
+        # Sort by dominant exchange's funding time (closest first), then take best delta
+        candidates.sort(key=lambda o: _dominant_exchange_ts(o))
         next_opp = max(candidates, key=lambda o: o["delta_pct"])
         log.info(
             "IDLE → LOOKING: %d pairs within window. Best is %s (delta %.4f%%)",
@@ -371,7 +373,7 @@ class AutomationEngine:
         window_sec = AUTO_ENTRY_WINDOW_MIN * 60
         candidates = []
         for opp in scan:
-            trigger_ts = _short_exchange_ts(opp)
+            trigger_ts = _dominant_exchange_ts(opp)
             if trigger_ts <= 0 or trigger_ts - now > window_sec:
                 continue
             if opp["delta_pct"] < AUTO_DELTA_THRESHOLD:
@@ -443,7 +445,7 @@ class AutomationEngine:
             )
             self._delay_orders.append(delay_order)
 
-            trigger_ts = _short_exchange_ts(best)
+            trigger_ts = _dominant_exchange_ts(best)
             funding_in = "N/A"
             if trigger_ts:
                 diff_sec = max(0, trigger_ts - now)
@@ -485,11 +487,11 @@ class AutomationEngine:
         cancelled_any = False
 
         for order in list(self._delay_orders):
-            # Anchor window to SHORT exchange's payment time
-            trigger_ts = (
-                order.bybit_next_ts if order.side_bybit == "sell"
-                else order.kucoin_next_ts
-            )
+            # Anchor window to dominant exchange's payment time (abs FR terbesar)
+            if abs(order.bybit_rate) > abs(order.kucoin_rate):
+                trigger_ts = order.bybit_next_ts
+            else:
+                trigger_ts = order.kucoin_next_ts
             time_left = max(0, trigger_ts - now)
 
             # Window expired → cancel, kembali LOOKING
@@ -944,11 +946,11 @@ class AutomationEngine:
         return opps
 
     def _in_funding_window(self, now: float) -> bool:
-        """Check if any pair has its SHORT-exchange funding within AUTO_ENTRY_WINDOW_MIN."""
+        """Check if any pair has its dominant-exchange funding within AUTO_ENTRY_WINDOW_MIN."""
         scan = self._get_scan()
         window_sec = AUTO_ENTRY_WINDOW_MIN * 60
         for opp in scan:
-            trigger_ts = _short_exchange_ts(opp)
+            trigger_ts = _dominant_exchange_ts(opp)
             if trigger_ts > 0 and 0 < trigger_ts - now <= window_sec:
                 return True
         return False
