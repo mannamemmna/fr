@@ -130,15 +130,14 @@ class SpreadEngine:
         # Price Spread
         price_spread = ((p_long - p_short) / p_short) * 100.0 if p_short > 0 else 0.0
 
-        # Normalized Funding Diff
-        max_interval = max(bb_iv, kc_iv, 1)
-        bb_norm = bb_rate * (max_interval / max(bb_iv, 1))
-        kc_norm = kc_rate * (max_interval / max(kc_iv, 1))
+        # Normalized Funding Diff (per-jam)
+        bb_norm = bb_rate / max(bb_iv, 1)   # rate per jam
+        kc_norm = kc_rate / max(kc_iv, 1)   # rate per jam
         raw_diff = bb_norm - kc_norm
         funding_diff_pct = abs(raw_diff) * 100.0
 
         # Annualized
-        per_day = 24.0 / max_interval
+        per_day = 24.0
         net_daily = funding_diff_pct / 100.0 * per_day
         annual_pct = net_daily * 365.0 * 100.0
 
