@@ -79,6 +79,12 @@ def main():
         initial = run_scan()
         state.last_scan = initial
         syms = [o["symbol"] for o in initial.get("opportunities", [])]
+        # Limit WebSocket subscriptions — subscribe TOP N by delta_pct only
+        # 539 pair overload WS connection (disconnect loop). 50-100 is safe.
+        max_ws = 100
+        if len(syms) > max_ws:
+            syms = syms[:max_ws]
+            log.info("Trimmed WS subscriptions to top %d symbols by funding diff", max_ws)
     except Exception:
         log.warning("Initial scan failed, WS will start with empty symbol list (subscribe after /scan)")
         syms = []

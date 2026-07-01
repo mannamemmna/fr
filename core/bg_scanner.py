@@ -62,8 +62,11 @@ def _bg_scanner_loop():
             n_opps = len(payload.get("opportunities", []))
             log.info("Auto-scan: %d opportunities in %.1fs", n_opps, payload.get("scan_duration", 0))
 
-            # Update WebSocket subscription with all common symbols
+            # Update WebSocket subscription with all common symbols (limited to 100)
             symbols = [o["symbol"] for o in payload.get("opportunities", [])]
+            max_ws = 100
+            if len(symbols) > max_ws:
+                symbols = symbols[:max_ws]
             if symbols and state.ws_pool:
                 state.ws_pool.update_symbols(symbols)
                 log.debug("WS subscribed to %d symbols", len(symbols))
