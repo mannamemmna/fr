@@ -84,27 +84,34 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         fr_paid = p.get("fr_paid", 0.0)
         fr_received = p.get("fr_received", 0.0)
 
-        # Ambil jam next payment dari data scan
-        next_funding_jam = "—"
+        # Ambil jam next payment masing-masing exchange dari data scan
+        bybit_funding_jam = "—"
+        kucoin_funding_jam = "—"
         upnl = "—"
         current_bb = "—"
         current_kc = "—"
 
         for o in opps:
             if o["symbol"].upper() == sym.upper():
-                # Format waktu ke WIB (Waktu Indonesia Barat, UTC+7)
+                # Format waktu ke WIB (UTC+7)
                 bb_ts = o.get("bybit_next_ts", 0) or 0
                 kc_ts = o.get("kucoin_next_ts", 0) or 0
-                min_ts = min(bb_ts, kc_ts) if bb_ts and kc_ts else (bb_ts or kc_ts)
 
-                if min_ts > 0:
-                    dt_utc = datetime.fromtimestamp(min_ts, tz=timezone.utc)
+                if bb_ts > 0:
+                    dt_utc = datetime.fromtimestamp(bb_ts, tz=timezone.utc)
                     dt_wib = dt_utc.astimezone(timezone(timedelta(hours=7)))
-                    next_funding_jam = dt_wib.strftime("%H:%M WIB")
+                    bybit_funding_jam = dt_wib.strftime("%H:%M WIB")
                 else:
-                    next_funding_jam = o.get("next_funding", "—").replace("UTC", "WIB")
+                    bybit_funding_jam = o.get("next_funding", "—").replace("UTC", "WIB")
 
-                # Ambil mark price terkini untuk current price
+                if kc_ts > 0:
+                    dt_utc = datetime.fromtimestamp(kc_ts, tz=timezone.utc)
+                    dt_wib = dt_utc.astimezone(timezone(timedelta(hours=7)))
+                    kucoin_funding_jam = dt_wib.strftime("%H:%M WIB")
+                else:
+                    kucoin_funding_jam = o.get("next_funding", "—").replace("UTC", "WIB")
+
+                # Ambil mark price terkini
                 c_bb = o.get("bybit_mark", 0)
                 c_kc = o.get("kucoin_mark", 0)
                 if c_bb: current_bb = f"${c_bb:.4f}"
@@ -122,7 +129,7 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 upnl = f"`{(pnl_bb + pnl_kc):+.2f}`"
                 break
 
-        funding_label = f"Funding: ⌛ Next payment {next_funding_jam}"
+        funding_label = f"Funding: ⌛ Next payment | Bybit: `{bybit_funding_jam}` | KuCoin: `{kucoin_funding_jam}`"
         fr_label = f"FR dibayar: `{fr_paid:.2f}` | diterima: `{fr_received:.2f}` | bersih: `{funding:+.2f}` USD"
 
         spread_str = f"{spread}%" if isinstance(spread, float) else str(spread)

@@ -60,7 +60,6 @@ AUTO_DELAY_ENTRY_PRICE_SPREAD: float = float(os.getenv("AUTO_DELAY_ENTRY_PRICE_S
 AUTO_LIVE_CLOSE_FUNDING_DIFF: float = float(os.getenv("AUTO_LIVE_CLOSE_FUNDING_DIFF", "0.05"))   # Tahap 1: tunggu Diff FR drop
 AUTO_LIVE_CLOSE_PRICE_SPREAD: float = float(os.getenv("AUTO_LIVE_CLOSE_PRICE_SPREAD", "0.0"))    # Tahap 2: close jika spread >= nilai ini
 
-AUTO_PREFER_SAME_INTERVAL: bool = os.getenv("AUTO_PREFER_SAME_INTERVAL", "true").lower() in ("true", "1", "yes")
 # Auto-close all open paper positions on bot restart (prevents unmonitored floating)
 AUTO_CLOSE_ON_RESTART: bool = os.getenv("AUTO_CLOSE_ON_RESTART", "true").lower() in ("true", "1", "yes")
 

@@ -23,6 +23,7 @@ from config_ws import (
     WS_RECONNECT_BASE,
     WS_RECONNECT_JITTER,
     WS_RECONNECT_MAX,
+    WS_MIN_STABLE_SEC,
 )
 from config import WS_HEARTBEAT_SEC
 from exchanges.bybit import BybitClient
@@ -58,6 +59,7 @@ class WSConnection:
         self._stop = threading.Event()
         self._connected = threading.Event()
         self._reconnect_count = 0
+        self._connected_since: float = 0.0
         self._subscribed_topics: list[str] = []
 
     # ─── Public API ───────────────────────────────────────────────────
@@ -92,10 +94,14 @@ class WSConnection:
                 log.error("[%s] WS error: %s", self.name, e)
             if self._stop.is_set():
                 break
+            if self._connected_since and (time.time() - self._connected_since) >= WS_MIN_STABLE_SEC:
+                self._reconnect_count = 0
+            self._connected_since = 0.0
             self._backoff()
         log.info("[%s] WS run loop ended", self.name)
 
     def _connect_and_listen(self):
+        self._refresh_url()
         self._ws = websocket.WebSocketApp(
             self.url,
             on_open=self._on_open,
@@ -110,9 +116,14 @@ class WSConnection:
             skip_utf8_validation=False,
         )
 
+    def _refresh_url(self):
+        """Override di subclass yang connect URL-nya bisa basi antar koneksi
+        (mis. bullet token KuCoin yang sekali pakai). No-op secara default."""
+        pass
+
     def _on_open(self, ws):
         self._connected.set()
-        self._reconnect_count = 0
+        self._connected_since = time.time()
         log.info("[%s] WS connected", self.name)
         # Re-subscribe
         if self._subscribed_topics:
@@ -271,6 +282,17 @@ class KuCoinWS(WSConnection):
             except Exception:
                 log.warning("KuCoin WS: failed to get bullet token, using default endpoint")
         return None
+
+    def _refresh_url(self):
+        """Bullet token KuCoin cuma berlaku untuk satu sesi — pakai ulang
+        setelah koneksi yang dituju sudah tutup bikin server terima handshake
+        lalu langsung close dengan code=1000 msg='Bye'. Ambil token baru
+        sebelum tiap percobaan koneksi, termasuk reconnect setelah drop."""
+        fresh = self._get_ws_url()
+        if fresh:
+            self.url = fresh
+        else:
+            log.warning("[kucoin] Could not refresh bullet token — retrying with previous URL")
 
     def update_symbols(self, symbols: list[str]):
         self._symbols = symbols

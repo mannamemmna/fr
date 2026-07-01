@@ -28,7 +28,8 @@ PORTFOLIO_FILE = os.path.join(DATA_DIR, "portfolio.json")
 EXEC_LOG_FILE = os.path.join(DATA_DIR, "execution_log.jsonl")
 STATE_FILE = os.path.join(DATA_DIR, "paper_state.json")
 
-DEFAULT_TAKER_FEE = 0.0004  # 0.04% per leg
+BYBIT_TAKER_FEE = 0.00055  # 0.055% per leg
+KUCOIN_TAKER_FEE = 0.0006  # 0.060% per leg
 
 
 def _utcnow_iso() -> str:
@@ -218,12 +219,12 @@ class PaperEngine:
         qty_bybit = position_size / max(bb_price, 0.0001)
         qty_kucoin = position_size / max(kc_price, 0.0001)
 
-        fee_per_leg = position_size * DEFAULT_TAKER_FEE
-        fee = fee_per_leg * 2  # both legs
+        fee_bybit = position_size * BYBIT_TAKER_FEE
+        fee_kucoin = position_size * KUCOIN_TAKER_FEE
+        fee = fee_bybit + fee_kucoin
         margin_per_ex = amount_usd / 2.0
-        fee_per_ex = fee / 2.0
-        self._balance_bybit -= margin_per_ex + fee_per_ex
-        self._balance_kucoin -= margin_per_ex + fee_per_ex
+        self._balance_bybit -= margin_per_ex + fee_bybit
+        self._balance_kucoin -= margin_per_ex + fee_kucoin
         self._total_fees += fee
 
         # Record position
@@ -241,8 +242,8 @@ class PaperEngine:
             "quantity": round(qty_bybit, 8),  # backward compat
             "entry_price_bybit": bb_price,
             "entry_price_kucoin": kc_price,
-            "entry_fee_bybit": round(fee_per_leg, 6),
-            "entry_fee_kucoin": round(fee_per_leg, 6),
+            "entry_fee_bybit": round(fee_bybit, 6),
+            "entry_fee_kucoin": round(fee_kucoin, 6),
             "entry_spread": opp.get("spread_pct"),
             "entry_rate_bybit": opp.get("bybit_rate_pct"),
             "entry_rate_kucoin": opp.get("kucoin_rate_pct"),
@@ -329,8 +330,9 @@ class PaperEngine:
 
         # Exit fees (on position size, not margin)
         position_size = pos.get("position_size", pos.get("amount_usd", 0))
-        exit_fee_per_leg = position_size * DEFAULT_TAKER_FEE
-        exit_fee = exit_fee_per_leg * 2
+        exit_fee_bybit = position_size * BYBIT_TAKER_FEE
+        exit_fee_kucoin = position_size * KUCOIN_TAKER_FEE
+        exit_fee = exit_fee_bybit + exit_fee_kucoin
         entry_fee = float(pos.get("entry_fee_bybit", 0) or 0) + float(
             pos.get("entry_fee_kucoin", 0) or 0
         )
@@ -376,8 +378,8 @@ class PaperEngine:
             pos["status"] = "closed"
             pos["exit_price_bybit"] = exit_price_bb
             pos["exit_price_kucoin"] = exit_price_kc
-            pos["exit_fee_bybit"] = round(exit_fee_per_leg, 6)
-            pos["exit_fee_kucoin"] = round(exit_fee_per_leg, 6)
+            pos["exit_fee_bybit"] = round(exit_fee_bybit, 6)
+            pos["exit_fee_kucoin"] = round(exit_fee_kucoin, 6)
             pos["exit_time"] = _utcnow_iso()
             pos["price_pnl_bb"] = round(price_pnl_bb, 8)
             pos["price_pnl_kc"] = round(price_pnl_kc, 8)
@@ -416,8 +418,8 @@ class PaperEngine:
             "exit_price_kucoin": exit_price_kc,
             "entry_fee_bybit": float(pos.get("entry_fee_bybit", 0) or 0),
             "entry_fee_kucoin": float(pos.get("entry_fee_kucoin", 0) or 0),
-            "exit_fee_bybit": round(exit_fee_per_leg, 6),
-            "exit_fee_kucoin": round(exit_fee_per_leg, 6),
+            "exit_fee_bybit": round(exit_fee_bybit, 6),
+            "exit_fee_kucoin": round(exit_fee_kucoin, 6),
             "realized_pnl": round(realized_pnl, 2),
             "price_pnl": round(total_price_pnl, 2),
             "funding_pnl": round(funding_pnl, 2),
