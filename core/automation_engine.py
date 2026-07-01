@@ -811,14 +811,22 @@ class AutomationEngine:
             should_exit = True
             reason = f"Payment lewat + spread aman"
         elif payment_passed and not spread_ok:
-            log.info("LIVE %s: payment lewat tapi spread memburuk %.2f%% (toleransi %.1f%%), tunggu...",
-                     symbol, spread_slippage, MAX_SPREAD_SLIPPAGE)
-        elif fr_ready:
-            should_exit = True
-            if threshold_met:
-                reason = f"Diff FR turun ke `{current_delta:.4f}%`"
+            # Spread jelek — tunggu, FR decay/flip jadi backup
+            if fr_ready:
+                should_exit = True
+                if threshold_met:
+                    reason = f"Diff FR turun ke `{current_delta:.4f}%`"
+                else:
+                    reason = "Arah FR flip"
             else:
-                reason = "Arah FR flip"
+                log.info("LIVE %s: payment lewat tapi spread memburuk %.2f%% (toleransi %.1f%%), tunggu...",
+                         symbol, spread_slippage, MAX_SPREAD_SLIPPAGE)
+        else:
+            # Payment belum lewat — exit cuma kalau spread positif (existing Tahap 2 logic)
+            # Jangan exit karena FR flip sebelum payment diterima!
+            if price_spread_now >= AUTO_LIVE_CLOSE_PRICE_SPREAD:
+                should_exit = True
+                reason = f"Price Spread positif ({price_spread_now:+.4f}%)"
 
         # ── EXECUTE ─────────────────────────────────────────────────────
         if should_exit:
