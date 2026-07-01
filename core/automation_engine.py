@@ -50,6 +50,7 @@ from core.paper_engine import PaperEngine
 from core.rebalance_engine import RebalanceEngine
 from core.spread_engine import SpreadEngine
 from core.market_cache import get_price_cache, get_funding_cache
+from core.live_engine import LiveEngine
 
 log = logging.getLogger("fr-bot.auto")
 
@@ -195,8 +196,10 @@ class AutomationEngine:
     """
 
     def __init__(self, paper_engine: PaperEngine, event_callback=None,
-                 spread_engine: Optional[SpreadEngine] = None):
+                 spread_engine: Optional[SpreadEngine] = None,
+                 live_engine: Optional["LiveEngine"] = None):
         self._paper = paper_engine
+        self._live_engine = live_engine
         self._event_callback = event_callback
         self._spread = spread_engine
         self._price = get_price_cache()
@@ -582,19 +585,23 @@ class AutomationEngine:
     def _execute_delay_order(self, order: DelayOrder, current: dict, time_left: float):
         """Execute the delayed order through paper or live engine."""
         if PAPER_MODE:
-            result = self._paper.execute_instant(
-                order.symbol,
-                order.amount_usd,
-                order.side_bybit,
-                order.side_kucoin,
-                order.leverage,
-            )
+            engine = self._paper
         else:
-            log.error("Live execution not yet implemented")
-            self._emit_event("error", "🔴 Live execution not yet implemented")
-            self._live_order = None
-            self._state = State.IDLE
-            return
+            engine = self._live_engine
+            if not engine:
+                log.error("Live engine not available")
+                self._emit_event("error", "🔴 Live engine tidak tersedia")
+                self._live_order = None
+                self._state = State.IDLE
+                return
+
+        result = engine.execute_instant(
+            order.symbol,
+            order.amount_usd,
+            order.side_bybit,
+            order.side_kucoin,
+            order.leverage,
+        )
 
         if result["status"] == "done":
             pos = result.get("position", {})
@@ -813,10 +820,14 @@ class AutomationEngine:
         if should_exit:
             log.info("LIVE DIFF → CLOSE: %s — %s", symbol, reason)
             if PAPER_MODE:
-                result = self._paper.close_position(pos_id)
+                engine = self._paper
             else:
-                log.error("Live close not yet implemented")
-                return
+                engine = self._live_engine
+                if not engine:
+                    log.error("Live engine not available")
+                    return
+
+            result = engine.close_position(pos_id)
 
             self._emit_event(
                 "close",
@@ -876,10 +887,14 @@ class AutomationEngine:
             log.info("LIVE SAME Tahap 2 → CLOSE: %s spread=%.4f%% ≥ %.4f%%",
                      symbol, price_spread_now, AUTO_LIVE_CLOSE_PRICE_SPREAD)
             if PAPER_MODE:
-                result = self._paper.close_position(pos_id)
+                engine = self._paper
             else:
-                log.error("Live close not yet implemented")
-                return
+                engine = self._live_engine
+                if not engine:
+                    log.error("Live engine not available")
+                    return
+
+            result = engine.close_position(pos_id)
 
             self._emit_event(
                 "close",

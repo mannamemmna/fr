@@ -156,10 +156,12 @@ def main():
             log.debug("Cannot send auto event to %s", notify_chat_id)
 
     if state.paper_engine:
+        live_eng = None if PAPER_MODE else state.paper_engine
         state.auto_engine = AutomationEngine(
             state.paper_engine,
             event_callback=_on_auto_event,
             spread_engine=state.spread_engine,
+            live_engine=live_eng,
         )
         # Inject rebalance engine
         state.auto_engine._rebalance_engine = RebalanceEngine(state.paper_engine, paper_mode=PAPER_MODE)
