@@ -44,10 +44,12 @@ def find_opportunities(bybit_rates: dict, kucoin_rates: dict) -> list[dict]:
         net_daily = abs(raw_fr_diff) * per_day
         annual = net_daily * 365
 
-        if raw_fr_diff > 0:
+        # Direction: SHORT exchange dengan abs(FR) lebih besar
+        # Berlaku untuk FR positif (short receive) maupun negatif (short receive |FR|)
+        if abs(bb_r) > abs(kc_r):
             direction = "SHORT Bybit / LONG KuCoin"
             bybit_action, kucoin_action = "SHORT", "LONG"
-        elif raw_fr_diff < 0:
+        elif abs(kc_r) > abs(bb_r):
             direction = "SHORT KuCoin / LONG Bybit"
             bybit_action, kucoin_action = "LONG", "SHORT"
         else:

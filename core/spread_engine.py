@@ -111,13 +111,14 @@ class SpreadEngine:
 
         raw_fr_diff = bb_rate - kc_rate
 
-        # Direction & actions
-        if raw_fr_diff > 0:
+        # Direction: SHORT exchange dengan abs(FR) lebih besar (untung maksimal)
+        # Berlaku untuk FR positif (short receive) maupun negatif (short receive |FR|)
+        if abs(bb_rate) > abs(kc_rate):
             direction = "SHORT Bybit / LONG KuCoin"
             bybit_action, kucoin_action = "SHORT", "LONG"
             p_short = bybit_price
             p_long = kucoin_price
-        elif raw_fr_diff < 0:
+        elif abs(kc_rate) > abs(bb_rate):
             direction = "SHORT KuCoin / LONG Bybit"
             bybit_action, kucoin_action = "LONG", "SHORT"
             p_short = kucoin_price
