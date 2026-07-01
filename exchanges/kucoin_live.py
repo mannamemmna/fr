@@ -90,9 +90,9 @@ class KuCoinLiveClient:
         price = self.get_ticker(kc_symbol)["mark_price"]
         if price <= 0:
             raise RuntimeError(f"KuCoin invalid mark price for {kc_symbol}")
-        # KuCoin futures order size is contracts. This approximation is safe for small USDT-margined contracts;
-        # production users should tune contract multipliers per symbol.
-        qty = max(1, int((amount_usd * leverage) / price))
+        # KuCoin futures order size: integer contracts (most USDT-margined perps = 1 contract per USD)
+        # Round instead of truncate to avoid consistent under-sizing on cheap tokens
+        qty = max(1, round((amount_usd * leverage) / price))
         body = {
             "clientOid": f"frbot-{int(time.time()*1000)}",
             "side": "buy" if side.lower() == "buy" else "sell",
@@ -112,7 +112,7 @@ class KuCoinLiveClient:
             "side": close_side,
             "symbol": kc_symbol,
             "type": "market",
-            "size": max(1, int(qty)),
+            "size": max(1, round(qty)),
             "reduceOnly": True,
         }
         j = self._request("POST", "/api/v1/orders", body=body)

@@ -155,6 +155,27 @@ class LiveEngine:
             bb_order = self.bybit.open_market(symbol, side_bybit, amount_usd, leverage)
             kc_order = self.kucoin.open_market(symbol, side_kucoin, amount_usd, leverage)
         except Exception as e:
+            # If BB order went through but KC failed → auto-close BB leg immediately
+            unwind_result = None
+            if bb_order and not kc_order:
+                try:
+                    bb_qty = float(bb_order.get("qty", 0) or 0)
+                    if bb_qty > 0:
+                        unwind_side = "sell" if side_bybit == "buy" else "buy"
+                        unwind_result = self.bybit.close_market(symbol, unwind_side, bb_qty)
+                        log.warning("PARTIAL UNWIND: BB leg closed after KC failed for %s", symbol)
+                except Exception as unwind_err:
+                    log.error("UNWIND FAILED: %s — manually close Bybit %s", unwind_err, symbol)
+            elif kc_order and not bb_order:
+                try:
+                    kc_qty = float(kc_order.get("qty", 0) or 0)
+                    if kc_qty > 0:
+                        unwind_side = "sell" if side_kucoin == "buy" else "buy"
+                        unwind_result = self.kucoin.close_market(symbol, unwind_side, kc_qty)
+                        log.warning("PARTIAL UNWIND: KC leg closed after BB failed for %s", symbol)
+                except Exception as unwind_err:
+                    log.error("UNWIND FAILED: %s — manually close KuCoin %s", unwind_err, symbol)
+
             result = {
                 "task_id": task_id,
                 "status": "failed_partial" if bb_order or kc_order else "failed",
@@ -162,7 +183,9 @@ class LiveEngine:
                 "errors": [str(e)],
                 "bybit_order": bb_order,
                 "kucoin_order": kc_order,
-                "message": "If status=failed_partial, one leg may be live. Manually check exchange and hedge/close immediately.",
+                "unwind": bool(unwind_result),
+                "message": "One leg opened then auto-unwound." if unwind_result else
+                           "If status=failed_partial, one leg may be live. Manually check exchange and hedge/close immediately.",
                 "started_at": started_at,
                 "finished_at": _utcnow_iso(),
             }
@@ -171,6 +194,9 @@ class LiveEngine:
 
         position_size = amount_usd * leverage
         avg_price = max(float(bb_order.get("avg_price") or 0), float(kc_order.get("avg_price") or 0), 0.0001)
+        # Use actual filled qty from exchange response
+        actual_qty_bb = float(bb_order.get("qty", 0) or 0)
+        actual_qty_kc = float(kc_order.get("qty", 0) or 0)
         position = {
             "id": task_id,
             "symbol": symbol.upper(),
@@ -179,7 +205,7 @@ class LiveEngine:
             "amount_usd": amount_usd,
             "position_size": round(position_size, 2),
             "leverage": leverage,
-            "quantity": round(position_size / avg_price, 8),
+            "quantity": actual_qty_bb or round(position_size / avg_price, 8),
             "qty_bybit": bb_order.get("qty"),
             "qty_kucoin": kc_order.get("qty"),
             "entry_price_bybit": bb_order.get("avg_price"),
@@ -212,15 +238,46 @@ class LiveEngine:
             self._save_portfolio()
             return {"ok": False, "critical": True, "error": str(e), "position_id": position_id, "message": "Close failed. Check exchanges manually."}
 
+        # Extract fill prices from exchange response
+        bb_fill = float(bb.get("raw", {}).get("result", {}).get("avgPrice", 0) or 0)
+        if not bb_fill:
+            bb_fill = float(bb.get("avg_price", 0) or 0)
+        kc_fill = float(kc.get("raw", {}).get("data", {}).get("dealPrice", 0) or 0)
+        if not kc_fill:
+            kc_fill = float(kc.get("avg_price", 0) or 0)
+
+        entry_bb = float(pos.get("entry_price_bybit", 0) or 0)
+        entry_kc = float(pos.get("entry_price_kucoin", 0) or 0)
+        qty_bb = float(pos.get("qty_bybit", 0) or 0)
+        qty_kc = float(pos.get("qty_kucoin", 0) or 0)
+        amount_usd = float(pos.get("amount_usd", 0) or 0)
+        leverage = int(pos.get("leverage", 1) or 1)
+
+        # Price PnL: if side=sell, PnL = qty * (entry - exit); if side=buy, PnL = qty * (exit - entry)
+        if pos["side_bybit"] == "sell":
+            bb_pnl = qty_bb * (entry_bb - bb_fill)
+        else:
+            bb_pnl = qty_bb * (bb_fill - entry_bb)
+        if pos["side_kucoin"] == "sell":
+            kc_pnl = qty_kc * (entry_kc - kc_fill)
+        else:
+            kc_pnl = qty_kc * (kc_fill - entry_kc)
+
+        realized_pnl = bb_pnl + kc_pnl
+
         with self._lock:
             pos["status"] = "closed"
             pos["exit_time"] = _utcnow_iso()
             pos["close_bybit"] = bb
             pos["close_kucoin"] = kc
+            pos["exit_price_bybit"] = bb_fill
+            pos["exit_price_kucoin"] = kc_fill
+            pos["realized_pnl"] = round(realized_pnl, 2)
+            self._realized_pnl += realized_pnl
             self._positions = [p for p in self._positions if p["id"] != pos["id"]]
             self._closed_positions.append(pos)
             self._save_portfolio()
-        result = {"ok": True, "position_id": pos["id"], "symbol": pos["symbol"], "realized_pnl": 0.0, "fees": 0.0, "balance_after": self.get_balance(), "amount_usd": pos.get("amount_usd", 0), "leverage": pos.get("leverage", 1), "position_size": pos.get("position_size", 0)}
+        result = {"ok": True, "position_id": pos["id"], "symbol": pos["symbol"], "realized_pnl": round(realized_pnl, 2), "fees": 0.0, "balance_after": self.get_balance(), "amount_usd": amount_usd, "leverage": leverage, "position_size": amount_usd * leverage}
         self._log_execution({"type": "close", **result, "finished_at": _utcnow_iso()})
         return result
 

@@ -711,7 +711,11 @@ class AutomationEngine:
                         f"⚡ _Emergency close — menutup leg satunya..._"
                     )
                     # Close the full position (remaining leg gets closed too)
-                    result = self._paper.close_position(pos_id)
+                    if PAPER_MODE:
+                        close_engine = self._paper
+                    else:
+                        close_engine = self._live_engine or self._paper
+                    result = close_engine.close_position(pos_id)
                     if result.get("ok"):
                         self._emit_event(
                             "close",
