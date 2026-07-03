@@ -75,5 +75,13 @@ HEDGE_EMERGENCY_OPEN: bool = os.getenv("HEDGE_EMERGENCY_OPEN", "true").lower() i
 HEDGE_CHECK_INTERVAL_SEC: int = int(os.getenv("HEDGE_CHECK_INTERVAL_SEC", "30"))
 HEDGE_BALANCE_DROP_THRESHOLD: float = float(os.getenv("HEDGE_BALANCE_DROP_THRESHOLD", "0.95"))
 
+# ─── Live Engine — Order Fill Verification & Partial Fill Protection ───
+LIVE_ORDER_PLACEMENT_MAX_RETRIES: int = int(os.getenv("LIVE_ORDER_PLACEMENT_MAX_RETRIES", "3"))
+LIVE_ORDER_PLACEMENT_RETRY_BASE_SEC: float = float(os.getenv("LIVE_ORDER_PLACEMENT_RETRY_BASE_SEC", "1.0"))
+LIVE_FILL_POLL_INTERVAL_SEC: float = float(os.getenv("LIVE_FILL_POLL_INTERVAL_SEC", "0.5"))
+LIVE_FILL_POLL_TIMEOUT_SEC: float = float(os.getenv("LIVE_FILL_POLL_TIMEOUT_SEC", "10"))
+LIVE_PARTIAL_FILL_TOLERANCE_PCT: float = float(os.getenv("LIVE_PARTIAL_FILL_TOLERANCE_PCT", "0.02"))
+LIVE_PARTIAL_FILL_TOPUP_MAX_ATTEMPTS: int = int(os.getenv("LIVE_PARTIAL_FILL_TOPUP_MAX_ATTEMPTS", "2"))
+
 # ─── Display ───
 DEFAULT_TOP_N: int = int(os.getenv("DEFAULT_TOP_N", "10"))

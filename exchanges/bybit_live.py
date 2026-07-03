@@ -9,7 +9,7 @@ import hmac
 import json
 import time
 from decimal import Decimal, ROUND_DOWN
-from typing import Any
+from typing import Any, Optional
 import logging
 
 import requests
@@ -90,12 +90,12 @@ class BybitLiveClient:
         try:
             return self._request("POST", "/v5/position/set-leverage", body=body)
         except RuntimeError as e:
-            # Bybit returns error if leverage already set; don't fail trade for that.
             if "110043" in str(e) or "leverage not modified" in str(e).lower():
                 return {"ok": True, "ignored": str(e)}
             raise
 
-    def open_market(self, symbol: str, side: str, amount_usd: float, leverage: int) -> dict[str, Any]:
+    def open_market(self, symbol: str, side: str, amount_usd: float, leverage: int,
+                     *, order_link_id: str | None = None) -> dict[str, Any]:
         bybit_symbol = self.to_symbol(symbol)
         self.set_leverage(bybit_symbol, leverage)
         price = self.get_ticker(bybit_symbol)["mark_price"]
@@ -109,8 +109,18 @@ class BybitLiveClient:
             "orderType": "Market",
             "qty": qty,
         }
+        if order_link_id:
+            body["orderLinkId"] = order_link_id
         j = self._request("POST", "/v5/order/create", body=body)
-        return {"order_id": j.get("result", {}).get("orderId"), "symbol": bybit_symbol, "side": side.lower(), "qty": float(qty), "avg_price": price, "raw": j}
+        return {
+            "order_id": j.get("result", {}).get("orderId"),
+            "symbol": bybit_symbol,
+            "side": side.lower(),
+            "qty": float(qty),
+            "requested_qty": float(qty),
+            "avg_price": price,
+            "raw": j,
+        }
 
     def close_market(self, symbol: str, side: str, qty: float) -> dict[str, Any]:
         bybit_symbol = self.to_symbol(symbol)
@@ -119,8 +129,72 @@ class BybitLiveClient:
         j = self._request("POST", "/v5/order/create", body=body)
         return {"order_id": j.get("result", {}).get("orderId"), "symbol": bybit_symbol, "side": close_side.lower(), "qty": qty, "raw": j}
 
+    def get_order_fill(self, symbol: str, order_id: str) -> dict[str, Any]:
+        """Query status fill AKTUAL sebuah order."""
+        bybit_symbol = self.to_symbol(symbol)
+        try:
+            j = self._request("GET", "/v5/order/realtime", {
+                "category": "linear", "symbol": bybit_symbol, "orderId": order_id,
+            })
+            rows = j.get("result", {}).get("list", [])
+            if not rows:
+                j2 = self._request("GET", "/v5/order/history", {
+                    "category": "linear", "symbol": bybit_symbol, "orderId": order_id,
+                })
+                rows = j2.get("result", {}).get("list", [])
+            if not rows:
+                return {"status": "unknown", "filled_qty": 0.0, "avg_price": 0.0}
+
+            row = rows[0]
+            filled_qty = float(row.get("cumExecQty", 0) or 0)
+            avg_price = float(row.get("avgPrice", 0) or 0)
+            order_status = row.get("orderStatus", "")
+            if order_status == "Filled":
+                status = "filled"
+            elif order_status == "PartiallyFilled":
+                status = "partial"
+            elif order_status == "New":
+                status = "open"
+            elif order_status in ("Cancelled", "Rejected", "Deactivated", "PartiallyFilledCanceled"):
+                status = "cancelled" if filled_qty == 0 else "partial"
+            else:
+                status = "unknown"
+            return {"status": status, "filled_qty": filled_qty, "avg_price": avg_price, "raw": row}
+        except Exception:
+            log.exception("Bybit get_order_fill failed for order %s", order_id)
+            return {"status": "unknown", "filled_qty": 0.0, "avg_price": 0.0}
+
+    def get_order_by_link_id(self, symbol: str, order_link_id: str) -> Optional[dict[str, Any]]:
+        """Cari order lewat orderLinkId. Dipakai recovery saat retry response hilang."""
+        bybit_symbol = self.to_symbol(symbol)
+        try:
+            j = self._request("GET", "/v5/order/realtime", {
+                "category": "linear", "symbol": bybit_symbol, "orderLinkId": order_link_id,
+            })
+            rows = j.get("result", {}).get("list", [])
+            if not rows:
+                j2 = self._request("GET", "/v5/order/history", {
+                    "category": "linear", "symbol": bybit_symbol, "orderLinkId": order_link_id,
+                })
+                rows = j2.get("result", {}).get("list", [])
+            if not rows:
+                return None
+            row = rows[0]
+            qty = float(row.get("qty", 0) or 0)
+            return {
+                "order_id": row.get("orderId"),
+                "symbol": bybit_symbol,
+                "side": row.get("side", "").lower(),
+                "qty": qty,
+                "requested_qty": qty,
+                "avg_price": float(row.get("avgPrice", 0) or 0),
+                "raw": row,
+            }
+        except Exception:
+            log.exception("Bybit get_order_by_link_id failed for %s", order_link_id)
+            return None
+
     def get_position_size(self, symbol: str, side: str) -> float:
-        """Return current position size for a symbol+side. 0.0 means no position (liquidated/closed)."""
         bybit_symbol = self.to_symbol(symbol)
         try:
             j = self._request("GET", "/v5/position/list", {"category": "linear", "symbol": bybit_symbol})

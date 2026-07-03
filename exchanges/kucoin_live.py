@@ -6,21 +6,16 @@ import hashlib
 import hmac
 import json
 import time
-from decimal import Decimal, ROUND_DOWN
-from typing import Any
+from typing import Any, Optional
 import logging
 
 import requests
 
+from core.rate_limiter import get_limiter
+
 BASE_URL = "https://api-futures.kucoin.com"
 
 log = logging.getLogger("kucoin_live")
-
-
-def _fmt_qty(qty: float, step: float = 1.0) -> str:
-    d = Decimal(str(qty))
-    s = Decimal(str(step))
-    return str((d / s).to_integral_value(rounding=ROUND_DOWN) * s).rstrip("0").rstrip(".") or "1"
 
 
 class KuCoinLiveClient:
@@ -82,27 +77,34 @@ class KuCoinLiveClient:
         return {"symbol": kc_symbol, "mark_price": float(data.get("price") or data.get("bestAskPrice") or data.get("bestBidPrice") or 0)}
 
     def set_leverage(self, symbol: str, leverage: int):
-        # KuCoin futures leverage is sent per order; no separate leverage endpoint needed for basic market orders.
         return {"ok": True, "symbol": self.to_symbol(symbol), "leverage": leverage}
 
-    def open_market(self, symbol: str, side: str, amount_usd: float, leverage: int) -> dict[str, Any]:
+    def open_market(self, symbol: str, side: str, amount_usd: float, leverage: int,
+                     *, client_oid: str | None = None) -> dict[str, Any]:
         kc_symbol = self.to_symbol(symbol)
         price = self.get_ticker(kc_symbol)["mark_price"]
         if price <= 0:
             raise RuntimeError(f"KuCoin invalid mark price for {kc_symbol}")
-        # KuCoin futures order size: integer contracts (most USDT-margined perps = 1 contract per USD)
-        # Round instead of truncate to avoid consistent under-sizing on cheap tokens
         qty = max(1, round((amount_usd * leverage) / price))
         body = {
-            "clientOid": f"frbot-{int(time.time()*1000)}",
+            "clientOid": client_oid or f"frbot-{int(time.time()*1000)}",
             "side": "buy" if side.lower() == "buy" else "sell",
             "symbol": kc_symbol,
             "type": "market",
             "size": qty,
             "leverage": str(leverage),
         }
-        j = self._request("POST", "/api/v1/orders", body=body)
-        return {"order_id": j.get("data", {}).get("orderId"), "symbol": kc_symbol, "side": side.lower(), "qty": float(qty), "avg_price": price, "raw": j}
+        with get_limiter("kucoin", 10):
+            j = self._request("POST", "/api/v1/orders", body=body)
+        return {
+            "order_id": j.get("data", {}).get("orderId"),
+            "symbol": kc_symbol,
+            "side": side.lower(),
+            "qty": float(qty),
+            "requested_qty": float(qty),
+            "avg_price": price,
+            "raw": j,
+        }
 
     def close_market(self, symbol: str, side: str, qty: float) -> dict[str, Any]:
         kc_symbol = self.to_symbol(symbol)
@@ -115,14 +117,64 @@ class KuCoinLiveClient:
             "size": max(1, round(qty)),
             "reduceOnly": True,
         }
-        j = self._request("POST", "/api/v1/orders", body=body)
+        with get_limiter("kucoin", 10):
+            j = self._request("POST", "/api/v1/orders", body=body)
         return {"order_id": j.get("data", {}).get("orderId"), "symbol": kc_symbol, "side": close_side, "qty": qty, "raw": j}
 
+    def get_order_fill(self, symbol: str, order_id: str) -> dict[str, Any]:
+        """Query status fill AKTUAL sebuah order."""
+        try:
+            with get_limiter("kucoin", 10):
+                j = self._request("GET", f"/api/v1/orders/{order_id}")
+            data = j.get("data", {})
+            filled_qty = float(data.get("filledSize", 0) or 0)
+            deal_value = float(data.get("filledValue", 0) or 0)
+            avg_price = (deal_value / filled_qty) if filled_qty > 0 else 0.0
+            is_active = bool(data.get("isActive", False))
+            cancel_exist = bool(data.get("cancelExist", False))
+
+            if cancel_exist and filled_qty == 0:
+                status = "cancelled"
+            elif not is_active and filled_qty > 0:
+                status = "filled"
+            elif is_active and filled_qty > 0:
+                status = "partial"
+            elif is_active:
+                status = "open"
+            else:
+                status = "unknown"
+            return {"status": status, "filled_qty": filled_qty, "avg_price": avg_price, "raw": data}
+        except Exception:
+            log.exception("KuCoin get_order_fill failed for order %s", order_id)
+            return {"status": "unknown", "filled_qty": 0.0, "avg_price": 0.0}
+
+    def get_order_by_client_oid(self, client_oid: str) -> Optional[dict[str, Any]]:
+        """Cari order lewat clientOid. Dipakai recovery saat retry response hilang."""
+        try:
+            with get_limiter("kucoin", 10):
+                j = self._request("GET", f"/api/v1/orders/byClientOid/{client_oid}")
+            data = j.get("data")
+            if not data:
+                return None
+            qty_val = float(data.get("size", 0) or 0)
+            return {
+                "order_id": data.get("id"),
+                "symbol": data.get("symbol"),
+                "side": data.get("side", "").lower(),
+                "qty": qty_val,
+                "requested_qty": qty_val,
+                "avg_price": float(data.get("price", 0) or 0),
+                "raw": data,
+            }
+        except Exception:
+            log.exception("KuCoin get_order_by_client_oid failed for %s", client_oid)
+            return None
+
     def get_position_size(self, symbol: str, side: str) -> float:
-        """Return current position size. 0.0 means no position (liquidated)."""
         kc_symbol = self.to_symbol(symbol)
         try:
-            j = self._request("GET", "/api/v1/positions", {"symbol": kc_symbol})
+            with get_limiter("kucoin", 10):
+                j = self._request("GET", "/api/v1/positions", {"symbol": kc_symbol})
             data = j.get("data", {})
             current_qty = abs(float(data.get("currentQty", 0) or 0))
             if current_qty == 0:
