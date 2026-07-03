@@ -130,6 +130,7 @@ class KuCoinLiveClient:
             filled_qty = float(data.get("filledSize", 0) or 0)
             deal_value = float(data.get("filledValue", 0) or 0)
             avg_price = (deal_value / filled_qty) if filled_qty > 0 else 0.0
+            fee = float(data.get("fee", 0) or 0)   # ← BARU
             is_active = bool(data.get("isActive", False))
             cancel_exist = bool(data.get("cancelExist", False))
 
@@ -143,10 +144,10 @@ class KuCoinLiveClient:
                 status = "open"
             else:
                 status = "unknown"
-            return {"status": status, "filled_qty": filled_qty, "avg_price": avg_price, "raw": data}
+            return {"status": status, "filled_qty": filled_qty, "avg_price": avg_price, "fee": fee, "raw": data}
         except Exception:
             log.exception("KuCoin get_order_fill failed for order %s", order_id)
-            return {"status": "unknown", "filled_qty": 0.0, "avg_price": 0.0}
+            return {"status": "unknown", "filled_qty": 0.0, "avg_price": 0.0, "fee": 0.0}
 
     def get_order_by_client_oid(self, client_oid: str) -> Optional[dict[str, Any]]:
         """Cari order lewat clientOid. Dipakai recovery saat retry response hilang."""

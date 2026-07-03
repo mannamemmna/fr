@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import threading
 import time
 from decimal import Decimal, ROUND_DOWN
 from typing import Any, Optional
@@ -32,6 +33,8 @@ class BybitLiveClient:
         self.base_url = base_url.rstrip("/")
         self.session = session or requests.Session()
         self.recv_window = "5000"
+        self._instrument_cache: dict[str, tuple[float, float]] = {}
+        self._instrument_lock = threading.Lock()
 
     def _sign(self, ts: str, payload: str) -> str:
         raw = ts + self.api_key + self.recv_window + payload
@@ -84,6 +87,33 @@ class BybitLiveClient:
         item = j.get("result", {}).get("list", [{}])[0]
         return {"symbol": bybit_symbol, "mark_price": float(item.get("markPrice") or item.get("lastPrice") or 0)}
 
+    def _get_instrument_step(self, symbol: str) -> tuple[float, float]:
+        """Ambil (qty_step, min_order_qty) untuk symbol, di-cache in-memory."""
+        bybit_symbol = self.to_symbol(symbol)
+        with self._instrument_lock:
+            cached = self._instrument_cache.get(bybit_symbol)
+            if cached:
+                return cached
+        try:
+            r = self.session.request(
+                "GET", f"{self.base_url}/v5/market/instruments-info",
+                params={"category": "linear", "symbol": bybit_symbol}, timeout=10,
+            )
+            r.raise_for_status()
+            j = r.json()
+            rows = j.get("result", {}).get("list", [])
+            if not rows:
+                raise RuntimeError(f"No instrument info for {bybit_symbol}")
+            lot = rows[0].get("lotSizeFilter", {})
+            step = float(lot.get("qtyStep", 0.001) or 0.001)
+            min_qty = float(lot.get("minOrderQty", step) or step)
+        except Exception:
+            log.exception("Bybit instrument-info lookup gagal untuk %s, pakai fallback step 0.001", bybit_symbol)
+            step, min_qty = 0.001, 0.001
+        with self._instrument_lock:
+            self._instrument_cache[bybit_symbol] = (step, min_qty)
+        return step, min_qty
+
     def set_leverage(self, symbol: str, leverage: int):
         bybit_symbol = self.to_symbol(symbol)
         body = {"category": "linear", "symbol": bybit_symbol, "buyLeverage": str(leverage), "sellLeverage": str(leverage)}
@@ -101,7 +131,13 @@ class BybitLiveClient:
         price = self.get_ticker(bybit_symbol)["mark_price"]
         if price <= 0:
             raise RuntimeError(f"Bybit invalid mark price for {bybit_symbol}")
-        qty = _fmt_qty((amount_usd * leverage) / price)
+        step, min_qty = self._get_instrument_step(symbol)
+        qty = _fmt_qty((amount_usd * leverage) / price, step)
+        if float(qty) < min_qty:
+            raise RuntimeError(
+                f"Computed qty {qty} di bawah minOrderQty Bybit {min_qty} untuk {bybit_symbol} "
+                f"— naikkan amount_usd atau leverage."
+            )
         body = {
             "category": "linear",
             "symbol": bybit_symbol,
@@ -124,10 +160,15 @@ class BybitLiveClient:
 
     def close_market(self, symbol: str, side: str, qty: float) -> dict[str, Any]:
         bybit_symbol = self.to_symbol(symbol)
+        step, _ = self._get_instrument_step(symbol)
         close_side = "Sell" if side.lower() == "buy" else "Buy"
-        body = {"category": "linear", "symbol": bybit_symbol, "side": close_side, "orderType": "Market", "qty": _fmt_qty(qty), "reduceOnly": True}
+        body = {
+            "category": "linear", "symbol": bybit_symbol, "side": close_side,
+            "orderType": "Market", "qty": _fmt_qty(qty, step), "reduceOnly": True,
+        }
         j = self._request("POST", "/v5/order/create", body=body)
-        return {"order_id": j.get("result", {}).get("orderId"), "symbol": bybit_symbol, "side": close_side.lower(), "qty": qty, "raw": j}
+        return {"order_id": j.get("result", {}).get("orderId"), "symbol": bybit_symbol,
+                "side": close_side.lower(), "qty": qty, "raw": j}
 
     def get_order_fill(self, symbol: str, order_id: str) -> dict[str, Any]:
         """Query status fill AKTUAL sebuah order."""
@@ -143,11 +184,12 @@ class BybitLiveClient:
                 })
                 rows = j2.get("result", {}).get("list", [])
             if not rows:
-                return {"status": "unknown", "filled_qty": 0.0, "avg_price": 0.0}
+                return {"status": "unknown", "filled_qty": 0.0, "avg_price": 0.0, "fee": 0.0}
 
             row = rows[0]
             filled_qty = float(row.get("cumExecQty", 0) or 0)
             avg_price = float(row.get("avgPrice", 0) or 0)
+            fee = float(row.get("cumExecFee", 0) or 0)
             order_status = row.get("orderStatus", "")
             if order_status == "Filled":
                 status = "filled"
@@ -159,13 +201,12 @@ class BybitLiveClient:
                 status = "cancelled" if filled_qty == 0 else "partial"
             else:
                 status = "unknown"
-            return {"status": status, "filled_qty": filled_qty, "avg_price": avg_price, "raw": row}
+            return {"status": status, "filled_qty": filled_qty, "avg_price": avg_price, "fee": fee, "raw": row}
         except Exception:
             log.exception("Bybit get_order_fill failed for order %s", order_id)
-            return {"status": "unknown", "filled_qty": 0.0, "avg_price": 0.0}
+            return {"status": "unknown", "filled_qty": 0.0, "avg_price": 0.0, "fee": 0.0}
 
     def get_order_by_link_id(self, symbol: str, order_link_id: str) -> Optional[dict[str, Any]]:
-        """Cari order lewat orderLinkId. Dipakai recovery saat retry response hilang."""
         bybit_symbol = self.to_symbol(symbol)
         try:
             j = self._request("GET", "/v5/order/realtime", {
@@ -206,4 +247,4 @@ class BybitLiveClient:
             return 0.0
         except Exception:
             log.exception("Bybit get_position_size failed")
-            return -1.0  # unknown
+            return -1.0

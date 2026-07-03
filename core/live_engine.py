@@ -15,7 +15,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from config import (
     DATA_DIR,
@@ -31,9 +31,12 @@ from config import (
     LIVE_FILL_POLL_TIMEOUT_SEC,
     LIVE_PARTIAL_FILL_TOLERANCE_PCT,
     LIVE_PARTIAL_FILL_TOPUP_MAX_ATTEMPTS,
+    LIVE_UNREALIZED_PNL_ENABLED,
 )
 from exchanges.bybit_live import BybitLiveClient
 from exchanges.kucoin_live import KuCoinLiveClient
+from core.funding_pnl import compute_funding_pnl
+from core.scanner import read_opportunities, run_scan
 
 log = logging.getLogger("live_engine")
 
@@ -73,6 +76,7 @@ class LiveEngine:
         self._closed_positions: List[Dict[str, Any]] = []
         self._realized_pnl = 0.0
         self._total_fees = 0.0
+        self._total_funding_pnl = 0.0
         self._load_portfolio()
 
         confirmed = LIVE_CONFIRM if live_confirm is None else live_confirm
@@ -112,6 +116,7 @@ class LiveEngine:
             self._closed_positions = data.get("closed_positions", [])
             self._realized_pnl = float(data.get("realized_pnl", 0))
             self._total_fees = float(data.get("total_fees", 0))
+            self._total_funding_pnl = float(data.get("total_funding_pnl", 0))
         except Exception:
             log.exception("Failed to load live portfolio")
 
@@ -121,6 +126,7 @@ class LiveEngine:
             "closed_positions": self._closed_positions,
             "realized_pnl": self._realized_pnl,
             "total_fees": self._total_fees,
+            "total_funding_pnl": self._total_funding_pnl,
             "saved_at": _utcnow_iso(),
         }
         tmp = LIVE_PORTFOLIO_FILE + ".tmp"
@@ -135,11 +141,27 @@ class LiveEngine:
     def get_balance(self) -> float:
         return min(self.bybit.get_usdt_balance(), self.kucoin.get_usdt_balance())
 
+    def _get_opportunity(self, symbol: str) -> Optional[dict]:
+        """Ambil snapshot funding rate terkini dari scan terakhir."""
+        data = read_opportunities()
+        symbol_upper = symbol.upper()
+        for opp in data.get("opportunities", []):
+            if opp["symbol"].upper() == symbol_upper:
+                return opp
+        try:
+            run_scan()
+            data = read_opportunities()
+            for opp in data.get("opportunities", []):
+                if opp["symbol"].upper() == symbol_upper:
+                    return opp
+        except Exception:
+            log.exception("Gagal refresh scan untuk entry funding rate snapshot %s", symbol)
+        return None
+
     # ── Helpers ────────────────────────────────────────────────────────
 
     def _place_leg_with_retry(self, client, symbol, side, amount_usd, leverage,
                                idem_key: str, *, is_kucoin: bool) -> Dict[str, Any]:
-        """Tempatkan satu leg dengan retry+backoff + duplicate-ID recovery."""
         last_err = None
         for attempt in range(LIVE_ORDER_PLACEMENT_MAX_RETRIES):
             try:
@@ -173,9 +195,8 @@ class LiveEngine:
 
     def _poll_fill(self, client, exchange_name: str, symbol: str, order_id: str,
                     requested_qty: float) -> Dict[str, Any]:
-        """Poll status fill sampai terminal state atau timeout."""
         deadline = time.time() + LIVE_FILL_POLL_TIMEOUT_SEC
-        last = {"status": "unknown", "filled_qty": 0.0, "avg_price": 0.0}
+        last = {"status": "unknown", "filled_qty": 0.0, "avg_price": 0.0, "fee": 0.0}
         while True:
             try:
                 last = client.get_order_fill(symbol, order_id)
@@ -197,7 +218,6 @@ class LiveEngine:
     def _reconcile_partial_fill(self, task_id, symbol, side_bybit, side_kucoin,
                                  bb_fill, kc_fill, bb_requested_qty, kc_requested_qty,
                                  leverage) -> Dict[str, Any]:
-        """Samakan kembali kedua leg setelah partial fill: top-up → downsize fallback."""
         actions = []
         bb_qty = bb_fill["filled_qty"]
         kc_qty = kc_fill["filled_qty"]
@@ -245,7 +265,6 @@ class LiveEngine:
                     actions.append({"exchange": "kucoin", "action": "topup_failed", "error": str(e)})
                     break
 
-        # Kalau masih mismatch → downsize leg yang lebih besar
         ratio_bb = bb_qty / bb_requested_qty if bb_requested_qty else 0
         ratio_kc = kc_qty / kc_requested_qty if kc_requested_qty else 0
         if abs(ratio_bb - ratio_kc) > LIVE_PARTIAL_FILL_TOLERANCE_PCT:
@@ -313,13 +332,10 @@ class LiveEngine:
                 idem_key=f"frbot-{task_id}-kc", is_kucoin=True,
             )
         except Exception as e:
-            # Bybit confirmed open, KuCoin failed → unwind Bybit LEGITIMATE side (TIDAK pre-flip)
             unwind_result = None
             try:
                 bb_qty = float(bb_order.get("qty", 0) or 0)
                 if bb_qty > 0:
-                    # close_market() menerima side POSISI ASLI dan flip internal
-                    # Jangan flip manual — bug §1.3
                     unwind_result = self.bybit.close_market(symbol, side_bybit, bb_qty)
                     log.warning("UNWIND: Bybit leg closed after KuCoin failed for %s", symbol)
             except Exception as unwind_err:
@@ -348,7 +364,7 @@ class LiveEngine:
         bb_fill = self._poll_fill(self.bybit, "bybit", symbol, bb_order["order_id"], bb_requested_qty)
         kc_fill = self._poll_fill(self.kucoin, "kucoin", symbol, kc_order["order_id"], kc_requested_qty)
 
-        # ── Step 3: hard failure — satu leg tidak terisi sama sekali ──────
+        # ── Step 3: hard failure — satu leg tidak terisi ──────────────────
         if bb_fill["filled_qty"] <= 0 or kc_fill["filled_qty"] <= 0:
             unwind_results = {}
             if bb_fill["filled_qty"] > 0:
@@ -402,6 +418,11 @@ class LiveEngine:
         entry_price_kc = kc_fill.get("avg_price") or kc_order.get("avg_price")
         position_size = amount_usd * leverage
 
+        # Ambil funding rate snapshot dari scan untuk entry
+        opp = self._get_opportunity(symbol) or {}
+        entry_fee_bb = round(bb_fill.get("fee", 0.0), 8)
+        entry_fee_kc = round(kc_fill.get("fee", 0.0), 8)
+
         position = {
             "id": task_id,
             "symbol": symbol.upper(),
@@ -415,6 +436,12 @@ class LiveEngine:
             "qty_kucoin": actual_qty_kc,
             "entry_price_bybit": entry_price_bb,
             "entry_price_kucoin": entry_price_kc,
+            "entry_fee_bybit": entry_fee_bb,
+            "entry_fee_kucoin": entry_fee_kc,
+            "entry_rate_bybit": opp.get("bybit_rate_pct", 0),
+            "entry_rate_kucoin": opp.get("kucoin_rate_pct", 0),
+            "bybit_interval_h": opp.get("bybit_interval_h", 8),
+            "kucoin_interval_h": opp.get("kucoin_interval_h", 8),
             "bybit_order_id": bb_order.get("order_id"),
             "kucoin_order_id": kc_order.get("order_id"),
             "fill_verification": {"bybit": bb_fill, "kucoin": kc_fill},
@@ -425,6 +452,7 @@ class LiveEngine:
         }
         with self._lock:
             self._positions.append(position)
+            self._total_fees += entry_fee_bb + entry_fee_kc
             self._save_portfolio()
 
         result = {
@@ -445,53 +473,97 @@ class LiveEngine:
                 return {"ok": False, "error": "position not found", "position_id": position_id}
             pos["status"] = "closing"
             self._save_portfolio()
-        try:
-            bb = self.bybit.close_market(pos["symbol"], pos["side_bybit"], float(pos.get("qty_bybit") or pos.get("quantity") or 0))
-            kc = self.kucoin.close_market(pos["symbol"], pos["side_kucoin"], float(pos.get("qty_kucoin") or pos.get("quantity") or 0))
-        except Exception as e:
-            pos["status"] = "open"
-            self._save_portfolio()
-            return {"ok": False, "critical": True, "error": str(e), "position_id": position_id, "message": "Close failed. Check exchanges manually."}
 
-        # Extract fill prices from exchange response
-        bb_fill = float(bb.get("raw", {}).get("result", {}).get("avgPrice", 0) or 0)
-        if not bb_fill:
-            bb_fill = float(bb.get("avg_price", 0) or 0)
-        kc_fill = float(kc.get("raw", {}).get("data", {}).get("dealPrice", 0) or 0)
-        if not kc_fill:
-            kc_fill = float(kc.get("avg_price", 0) or 0)
+        symbol = pos["symbol"]
+        qty_bb = float(pos.get("qty_bybit") or pos.get("quantity") or 0)
+        qty_kc = float(pos.get("qty_kucoin") or pos.get("quantity") or 0)
+
+        try:
+            bb_order = self.bybit.close_market(symbol, pos["side_bybit"], qty_bb)
+            kc_order = self.kucoin.close_market(symbol, pos["side_kucoin"], qty_kc)
+        except Exception as e:
+            with self._lock:
+                pos["status"] = "open"
+                self._save_portfolio()
+            return {"ok": False, "critical": True, "error": str(e), "position_id": position_id,
+                    "message": "Close failed. Check exchanges manually."}
+
+        # Verifikasi fill AKTUAL (harga + fee)
+        bb_fill = self._poll_fill(self.bybit, "bybit", symbol, bb_order["order_id"], qty_bb)
+        kc_fill = self._poll_fill(self.kucoin, "kucoin", symbol, kc_order["order_id"], qty_kc)
+
+        bb_exit_price = bb_fill.get("avg_price") or 0.0
+        kc_exit_price = kc_fill.get("avg_price") or 0.0
+        exit_fee_bb = bb_fill.get("fee", 0.0)
+        exit_fee_kc = kc_fill.get("fee", 0.0)
 
         entry_bb = float(pos.get("entry_price_bybit", 0) or 0)
         entry_kc = float(pos.get("entry_price_kucoin", 0) or 0)
-        qty_bb = float(pos.get("qty_bybit", 0) or 0)
-        qty_kc = float(pos.get("qty_kucoin", 0) or 0)
-        amount_usd = float(pos.get("amount_usd", 0) or 0)
-        leverage = int(pos.get("leverage", 1) or 1)
 
         if pos["side_bybit"] == "sell":
-            bb_pnl = qty_bb * (entry_bb - bb_fill)
+            price_pnl_bb = qty_bb * (entry_bb - bb_exit_price)
         else:
-            bb_pnl = qty_bb * (bb_fill - entry_bb)
+            price_pnl_bb = qty_bb * (bb_exit_price - entry_bb)
         if pos["side_kucoin"] == "sell":
-            kc_pnl = qty_kc * (entry_kc - kc_fill)
+            price_pnl_kc = qty_kc * (entry_kc - kc_exit_price)
         else:
-            kc_pnl = qty_kc * (kc_fill - entry_kc)
+            price_pnl_kc = qty_kc * (kc_exit_price - entry_kc)
+        total_price_pnl = price_pnl_bb + price_pnl_kc
 
-        realized_pnl = bb_pnl + kc_pnl
+        entry_fee_bb = float(pos.get("entry_fee_bybit", 0) or 0)
+        entry_fee_kc = float(pos.get("entry_fee_kucoin", 0) or 0)
+        total_fee = entry_fee_bb + entry_fee_kc + exit_fee_bb + exit_fee_kc
+
+        position_size = pos.get("position_size", pos.get("amount_usd", 0))
+        funding = compute_funding_pnl(
+            entry_rate_bybit_pct=float(pos.get("entry_rate_bybit", 0) or 0),
+            entry_rate_kucoin_pct=float(pos.get("entry_rate_kucoin", 0) or 0),
+            bybit_interval_h=int(pos.get("bybit_interval_h", 8) or 8),
+            kucoin_interval_h=int(pos.get("kucoin_interval_h", 8) or 8),
+            position_size=position_size,
+            side_bybit=pos["side_bybit"],
+            side_kucoin=pos["side_kucoin"],
+            entry_time_iso=pos.get("entry_time", _utcnow_iso()),
+        )
+
+        realized_pnl = total_price_pnl + funding["funding_pnl"] - total_fee
 
         with self._lock:
             pos["status"] = "closed"
             pos["exit_time"] = _utcnow_iso()
-            pos["close_bybit"] = bb
-            pos["close_kucoin"] = kc
-            pos["exit_price_bybit"] = bb_fill
-            pos["exit_price_kucoin"] = kc_fill
-            pos["realized_pnl"] = round(realized_pnl, 2)
+            pos["exit_price_bybit"] = bb_exit_price
+            pos["exit_price_kucoin"] = kc_exit_price
+            pos["exit_fee_bybit"] = round(exit_fee_bb, 8)
+            pos["exit_fee_kucoin"] = round(exit_fee_kc, 8)
+            pos["total_price_pnl"] = round(total_price_pnl, 8)
+            pos["funding_pnl"] = round(funding["funding_pnl"], 8)
+            pos["fr_paid"] = round(funding["fr_paid"], 8)
+            pos["fr_received"] = round(funding["fr_received"], 8)
+            pos["total_fee"] = round(total_fee, 8)
+            pos["realized_pnl"] = round(realized_pnl, 8)
             self._realized_pnl += realized_pnl
+            self._total_fees += exit_fee_bb + exit_fee_kc
+            self._total_funding_pnl += funding["funding_pnl"]
             self._positions = [p for p in self._positions if p["id"] != pos["id"]]
             self._closed_positions.append(pos)
             self._save_portfolio()
-        result = {"ok": True, "position_id": pos["id"], "symbol": pos["symbol"], "realized_pnl": round(realized_pnl, 2), "fees": 0.0, "balance_after": self.get_balance(), "amount_usd": amount_usd, "leverage": leverage, "position_size": amount_usd * leverage}
+
+        result = {
+            "ok": True, "position_id": pos["id"], "symbol": pos["symbol"],
+            "side_bybit": pos.get("side_bybit"), "side_kucoin": pos.get("side_kucoin"),
+            "entry_price_bybit": entry_bb, "entry_price_kucoin": entry_kc,
+            "exit_price_bybit": bb_exit_price, "exit_price_kucoin": kc_exit_price,
+            "price_pnl": round(total_price_pnl, 2),
+            "funding_pnl": round(funding["funding_pnl"], 2),
+            "fr_paid": round(funding["fr_paid"], 2),
+            "fr_received": round(funding["fr_received"], 2),
+            "fees": round(total_fee, 2),
+            "realized_pnl": round(realized_pnl, 2),
+            "balance_after": self.get_balance(),
+            "amount_usd": pos.get("amount_usd", 0),
+            "leverage": pos.get("leverage", 1),
+            "position_size": position_size,
+        }
         self._log_execution({"type": "close", **result, "finished_at": _utcnow_iso()})
         return result
 
@@ -532,16 +604,40 @@ class LiveEngine:
         bb_bal = self.bybit.get_usdt_balance()
         kc_bal = self.kucoin.get_usdt_balance()
         total_exposure = sum(p.get("position_size", p.get("amount_usd", 0)) for p in open_positions)
+
+        unrealized_pnl = 0.0
+        if LIVE_UNREALIZED_PNL_ENABLED:
+            for pos in open_positions:
+                try:
+                    bb_mark = self.bybit.get_ticker(pos["symbol"])["mark_price"]
+                    kc_mark = self.kucoin.get_ticker(pos["symbol"])["mark_price"]
+                except Exception:
+                    log.warning("Gagal ambil mark price live untuk unrealized PnL %s", pos["symbol"])
+                    continue
+                entry_bb = float(pos.get("entry_price_bybit", 0) or 0)
+                entry_kc = float(pos.get("entry_price_kucoin", 0) or 0)
+                qty_bb = float(pos.get("qty_bybit", 0) or 0)
+                qty_kc = float(pos.get("qty_kucoin", 0) or 0)
+                if pos["side_bybit"] == "sell":
+                    pnl_bb = qty_bb * (entry_bb - bb_mark)
+                else:
+                    pnl_bb = qty_bb * (bb_mark - entry_bb)
+                if pos["side_kucoin"] == "sell":
+                    pnl_kc = qty_kc * (entry_kc - kc_mark)
+                else:
+                    pnl_kc = qty_kc * (kc_mark - entry_kc)
+                unrealized_pnl += pnl_bb + pnl_kc
+
         return {
             "paper_mode": False,
             "balance": round(bb_bal + kc_bal, 2),
             "bybit_balance": round(bb_bal, 2),
             "kucoin_balance": round(kc_bal, 2),
             "realized_pnl": round(self._realized_pnl, 2),
-            "unrealized_pnl": 0.0,
-            "total_pnl": round(self._realized_pnl, 2),
+            "unrealized_pnl": round(unrealized_pnl, 2),
+            "total_pnl": round(self._realized_pnl + unrealized_pnl, 2),
             "total_fees": round(self._total_fees, 2),
-            "total_funding_pnl": 0.0,
+            "total_funding_pnl": round(self._total_funding_pnl, 2),
             "open_positions": len(open_positions),
             "total_exposure": round(total_exposure, 2),
             "closed_positions": len(self._closed_positions),

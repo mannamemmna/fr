@@ -21,6 +21,7 @@ from typing import Any, Dict, List, Optional
 
 from config import DATA_DIR, PAPER_INITIAL_BALANCE, REBALANCE_PAPER_FEE_PCT, REBALANCE_PAPER_DELAY_SEC
 from core.scanner import read_opportunities
+from core.funding_pnl import compute_funding_pnl
 
 log = logging.getLogger("paper_engine")
 
@@ -339,37 +340,19 @@ class PaperEngine:
         total_fee = entry_fee + exit_fee
 
         # Funding PnL breakdown — SHORT leg receives FR, LONG leg pays FR
-        entry_rate_bb = float(pos.get("entry_rate_bybit", 0) or 0) / 100.0
-        entry_rate_kc = float(pos.get("entry_rate_kucoin", 0) or 0) / 100.0
-        bb_iv = int(pos.get("bybit_interval_h", 8) or 8)
-        kc_iv = int(pos.get("kucoin_interval_h", 8) or 8)
-        entry_time_str = pos.get("entry_time", _utcnow_iso())
-        try:
-            entry_dt = datetime.fromisoformat(entry_time_str.replace("Z", "+00:00"))
-            hours_held = max(0, (_utcnow_ts() - entry_dt.timestamp()) / 3600.0)
-        except (ValueError, AttributeError):
-            hours_held = 0
-        # Est: rate_leg * position_size * (hours_held / interval_hours)
-        raw_bb = entry_rate_bb * position_size * (hours_held / max(bb_iv, 1))
-        raw_kc = entry_rate_kc * position_size * (hours_held / max(kc_iv, 1))
-        # Funding PnL breakdown — correct for both positive AND negative FR:
-        #   FR positif: SHORT receive, LONG pay
-        #   FR negatif: SHORT pay,    LONG receive
-        if pos["side_bybit"] == "sell":   # SHORT
-            fr_received_bb = max(raw_bb, 0)
-            fr_paid_bb     = max(-raw_bb, 0)
-        else:                              # LONG
-            fr_paid_bb     = max(raw_bb, 0)
-            fr_received_bb = max(-raw_bb, 0)
-        if pos["side_kucoin"] == "sell":   # SHORT
-            fr_received_kc = max(raw_kc, 0)
-            fr_paid_kc     = max(-raw_kc, 0)
-        else:                              # LONG
-            fr_paid_kc     = max(raw_kc, 0)
-            fr_received_kc = max(-raw_kc, 0)
-        fr_paid = fr_paid_bb + fr_paid_kc
-        fr_received = fr_received_bb + fr_received_kc
-        funding_pnl = fr_received - fr_paid
+        funding = compute_funding_pnl(
+            entry_rate_bybit_pct=float(pos.get("entry_rate_bybit", 0) or 0),
+            entry_rate_kucoin_pct=float(pos.get("entry_rate_kucoin", 0) or 0),
+            bybit_interval_h=int(pos.get("bybit_interval_h", 8) or 8),
+            kucoin_interval_h=int(pos.get("kucoin_interval_h", 8) or 8),
+            position_size=position_size,
+            side_bybit=pos["side_bybit"],
+            side_kucoin=pos["side_kucoin"],
+            entry_time_iso=pos.get("entry_time", _utcnow_iso()),
+        )
+        fr_paid = funding["fr_paid"]
+        fr_received = funding["fr_received"]
+        funding_pnl = funding["funding_pnl"]
 
         realized_pnl = total_price_pnl + funding_pnl - total_fee
 

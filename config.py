@@ -83,5 +83,8 @@ LIVE_FILL_POLL_TIMEOUT_SEC: float = float(os.getenv("LIVE_FILL_POLL_TIMEOUT_SEC"
 LIVE_PARTIAL_FILL_TOLERANCE_PCT: float = float(os.getenv("LIVE_PARTIAL_FILL_TOLERANCE_PCT", "0.02"))
 LIVE_PARTIAL_FILL_TOPUP_MAX_ATTEMPTS: int = int(os.getenv("LIVE_PARTIAL_FILL_TOPUP_MAX_ATTEMPTS", "2"))
 
+# ─── Live Engine — Unrealized PnL Display ───
+LIVE_UNREALIZED_PNL_ENABLED: bool = os.getenv("LIVE_UNREALIZED_PNL_ENABLED", "true").lower() in ("true", "1", "yes")
+
 # ─── Display ───
 DEFAULT_TOP_N: int = int(os.getenv("DEFAULT_TOP_N", "10"))
