@@ -86,17 +86,19 @@ def find_opportunities(bybit_rates: dict, kucoin_rates: dict) -> list[dict]:
         np_spread = b.next_payment_rate - k.next_payment_rate
         base = sym.split("/")[0]
 
-        # Funding Difference (per-jam — normalize ke 1 jam)
-        min_interval = min(b.interval_hours, k.interval_hours, 1)
-        # Normalize FR ke per-jam supaya interval beda (1h vs 8h) bisa dibanding
-        # secara adil tanpa inflasi buatan.
-        bb_norm = bb_r / max(b.interval_hours, 1)
-        kc_norm = kc_r / max(k.interval_hours, 1)
-        
-        raw_diff = bb_norm - kc_norm
-        funding_diff_pct = round(abs(raw_diff) * 100, 6)
-        # Net daily: selisih per-jam × 24 jam
-        diff_daily_pct = round(abs(raw_diff) * 24 * 100, 4)
+        # Funding Difference: raw diff for same interval, per-jam for diff interval
+        if b.interval_hours == k.interval_hours:
+            # Same interval: raw diff langsung
+            raw_diff = bb_r - kc_r
+            funding_diff_pct = round(abs(raw_diff) * 100, 6)
+            diff_daily_pct = round(abs(raw_diff) * (24 / max(b.interval_hours, 1)) * 100, 4)
+        else:
+            # Diff intervals: normalize per-jam supaya adil
+            bb_norm = bb_r / max(b.interval_hours, 1)
+            kc_norm = kc_r / max(k.interval_hours, 1)
+            raw_diff = bb_norm - kc_norm
+            funding_diff_pct = round(abs(raw_diff) * 100, 6)
+            diff_daily_pct = round(abs(raw_diff) * 24 * 100, 4)
 
         opps.append({
             "symbol": base,
