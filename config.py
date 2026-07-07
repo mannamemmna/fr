@@ -86,5 +86,10 @@ LIVE_PARTIAL_FILL_TOPUP_MAX_ATTEMPTS: int = int(os.getenv("LIVE_PARTIAL_FILL_TOP
 # ─── Live Engine — Unrealized PnL Display ───
 LIVE_UNREALIZED_PNL_ENABLED: bool = os.getenv("LIVE_UNREALIZED_PNL_ENABLED", "true").lower() in ("true", "1", "yes")
 
+# ─── Live Engine — Diff Interval Exit Strategy ───
+# Max hold time (menit) untuk Jalur A (interval beda) — force exit sebelum
+# kena bleeding FR (misal 10 menit sebelum SHORT exchange bayar lagi).
+LIVE_DIFF_HOLD_MAX_MINUTES: int = int(os.getenv("LIVE_DIFF_HOLD_MAX_MINUTES", "40"))
+
 # ─── Display ───
 DEFAULT_TOP_N: int = int(os.getenv("DEFAULT_TOP_N", "10"))

@@ -44,6 +44,7 @@ from config import (
     HEDGE_EMERGENCY_OPEN,
     HEDGE_CHECK_INTERVAL_SEC,
     HEDGE_BALANCE_DROP_THRESHOLD,
+    LIVE_DIFF_HOLD_MAX_MINUTES,
 )
 from core.scanner import run_scan, read_opportunities
 from core.paper_engine import PaperEngine
@@ -777,53 +778,100 @@ class AutomationEngine:
 
     # ─── LIVE — Jalur A: Interval BEDA ──────────────────────────────────
 
+    def _estimate_exit_pnl(self, pos: dict, price_spread_now: float,
+                            current: dict, now: float) -> dict:
+        """Estimasi real-time PnL yang akan direalisasi kalau exit sekarang.
+
+        Returns dict {estimated_pnl, price_pnl, funding_profit, total_fee, is_profitable}.
+        """
+        position_size = float(pos.get("position_size", pos.get("amount_usd", 0) * pos.get("leverage", 1)) or 0)
+        if position_size <= 0:
+            return {"estimated_pnl": 0.0, "price_pnl": 0.0, "funding_profit": 0.0,
+                    "total_fee": 0.0, "is_profitable": False}
+
+        # Price PnL (floating spread vs entry)
+        entry_spread = float(pos.get("entry_spread", 0) or 0)
+        spread_movement = price_spread_now - entry_spread
+        # spread positif = price PnL untung, negatif = rugi
+        price_pnl = spread_movement / 100.0 * position_size
+
+        # Funding profit estimasi (pro-rata dari entry rate)
+        from core.funding_pnl import compute_funding_pnl
+        funding = compute_funding_pnl(
+            entry_rate_bybit_pct=float(pos.get("entry_rate_bybit", 0) or 0),
+            entry_rate_kucoin_pct=float(pos.get("entry_rate_kucoin", 0) or 0),
+            bybit_interval_h=int(pos.get("bybit_interval_h", 8) or 8),
+            kucoin_interval_h=int(pos.get("kucoin_interval_h", 8) or 8),
+            position_size=position_size,
+            side_bybit=pos.get("side_bybit", "buy").lower(),
+            side_kucoin=pos.get("side_kucoin", "sell").lower(),
+            entry_time_iso=pos.get("entry_time", ""),
+            now_ts=now,
+        )
+
+        # Fee estimasi
+        entry_fee_bb = float(pos.get("entry_fee_bybit", 0) or 0)
+        entry_fee_kc = float(pos.get("entry_fee_kucoin", 0) or 0)
+        # Exit fee ≈ sama dengan entry fee (market order)
+        estimated_exit_fee = (entry_fee_bb + entry_fee_kc) if (entry_fee_bb + entry_fee_kc) > 0 else position_size * 0.00115
+        total_fee = entry_fee_bb + entry_fee_kc + estimated_exit_fee
+
+        funding_profit = funding["funding_pnl"]
+        estimated_pnl = price_pnl + funding_profit - total_fee
+
+        return {
+            "estimated_pnl": estimated_pnl,
+            "price_pnl": price_pnl,
+            "funding_profit": funding_profit,
+            "total_fee": total_fee,
+            "is_profitable": estimated_pnl > 0,
+        }
+
     def _tick_live_diff_interval(self, now, pos_id, pos, current, price_spread_now,
                                   entry_spread, current_spread, entry_delta, live_order, symbol):
-        """Exit after dominant exchange payment + safety check on spread slippage."""
-        EXIT_AFTER_PAYMENT_SEC = 300  # 5 menit setelah payment
+        """Exit untuk interval beda — pakai estimated PnL sebagai trigger utama."""
+        EXIT_AFTER_PAYMENT_SEC = 300  # 5 menit setelah payment dominant
 
-        # Ambil dominant_payment_ts dari live_order
         dominant_ts = live_order.dominant_payment_ts if live_order else 0
+        entry_time = live_order.created_at if live_order else now
 
-        # Hitung selisih spread dari entry (slippage safety)
-        spread_slippage = price_spread_now - live_order.entry_price_spread if live_order else 0
-        MAX_SPREAD_SLIPPAGE = 0.5  # toleransi spread memburuk 0.5%
-
-        # ── CONDITION 1: Payment sudah lewat + 5 menit? ──────────────────
+        # ── CONDITION A: Payment sudah lewat + margin ──────────────────
         payment_passed = dominant_ts > 0 and now >= dominant_ts + EXIT_AFTER_PAYMENT_SEC
 
-        # ── CONDITION 2: Spread safety — jangan exit kalau spread terlalu jelek ──
-        spread_ok = spread_slippage >= -MAX_SPREAD_SLIPPAGE
+        # ── CONDITION B: Max hold — force exit sebelum kena bleeding ────
+        hold_seconds = now - entry_time
+        max_hold_seconds = LIVE_DIFF_HOLD_MAX_MINUTES * 60
+        max_hold_reached = hold_seconds >= max_hold_seconds
 
-        # ── CONDITION 3: FR decay / flip (existing backup) ──────────────
-        current_raw = current.get("raw_fr_diff", 0) or 0
-        entry_raw = live_order.entry_raw_fr_diff if live_order else 0
-        current_delta = current.get("delta_pct", 0) or 0
-        threshold_met = abs(current_delta) <= AUTO_LIVE_CLOSE_FUNDING_DIFF
-        flip_met = (entry_raw * current_raw < 0) if entry_raw != 0 else False
-        fr_ready = threshold_met or flip_met
+        # ── Estimasikan PnL kalau exit sekarang ────────────────────────
+        pnl_est = self._estimate_exit_pnl(pos, price_spread_now, current, now)
+        is_profitable = pnl_est["is_profitable"]
+
+        current_delta_val = current.get("delta_pct", 0) or 0
 
         # ── DECISION ────────────────────────────────────────────────────
         should_exit = False
         reason = ""
 
-        if payment_passed and spread_ok:
+        if payment_passed and is_profitable:
             should_exit = True
-            reason = f"Payment lewat + spread aman"
-        elif payment_passed and not spread_ok:
-            # Spread jelek — tunggu, FR decay/flip jadi backup
-            if fr_ready:
+            reason = f"Payment lewat + profit ${pnl_est['estimated_pnl']:.2f} ✅"
+        elif payment_passed and not is_profitable:
+            # Payment lewat tapi masih rugi — tunggu profit
+            # Tapi kalau max hold hampir habis → force exit
+            if max_hold_reached:
                 should_exit = True
-                if threshold_met:
-                    reason = f"Diff FR turun ke `{current_delta:.4f}%`"
-                else:
-                    reason = "Arah FR flip"
+                reason = f"⚠️ MAX HOLD ({LIVE_DIFF_HOLD_MAX_MINUTES}m) — force exit (PnL ${pnl_est['estimated_pnl']:.2f})"
             else:
-                log.info("LIVE %s: payment lewat tapi spread memburuk %.2f%% (toleransi %.1f%%), tunggu...",
-                         symbol, spread_slippage, MAX_SPREAD_SLIPPAGE)
+                log.info("LIVE DIFF %s: payment lewat tapi estimated PnL masih $%.2f, tunggu %d menit sisa...",
+                         symbol, pnl_est['estimated_pnl'],
+                         int((max_hold_seconds - hold_seconds) / 60))
+        elif max_hold_reached:
+            # Hold terlalu lama tanpa payment — force exit
+            should_exit = True
+            reason = f"⏰ MAX HOLD ({LIVE_DIFF_HOLD_MAX_MINUTES}m) — force exit (PnL ${pnl_est['estimated_pnl']:.2f})"
         else:
-            # Payment belum lewat — exit cuma kalau spread positif (existing Tahap 2 logic)
-            # Jangan exit karena FR flip sebelum payment diterima!
+            # Payment belum lewat — exit cuma kalau spread positif (existing logic)
             if price_spread_now >= AUTO_LIVE_CLOSE_PRICE_SPREAD:
                 should_exit = True
                 reason = f"Price Spread positif ({price_spread_now:+.4f}%)"
@@ -843,7 +891,7 @@ class AutomationEngine:
 
             self._emit_event(
                 "close",
-                _format_trade_summary(result, symbol, entry_spread, current_spread, entry_delta, current_delta),
+                _format_trade_summary(result, symbol, entry_spread, current_spread, entry_delta, current_delta_val),
             )
             self._live_position_id = None
             self._live_order = None
@@ -855,8 +903,9 @@ class AutomationEngine:
             # Log status setiap 60 detik
             if now - self._last_log > 60:
                 dom_str = f"Payment +{EXIT_AFTER_PAYMENT_SEC//60}m di {datetime.fromtimestamp(dominant_ts, tz=timezone(timedelta(hours=7))).strftime('%H:%M WIB')}" if dominant_ts else "N/A"
-                log.info("LIVE DIFF %s: spread=%.4f%% delta=%.4f%% %s",
-                         symbol, price_spread_now, current_delta, dom_str)
+                log.info("LIVE DIFF %s: spread=%.4f%% est_pnl=$%.2f hold=%ds/%ds %s",
+                         symbol, price_spread_now, pnl_est["estimated_pnl"],
+                         int(hold_seconds), int(max_hold_seconds), dom_str)
                 self._last_log = now
 
     # ─── LIVE — Jalur B: Interval SAMA ──────────────────────────────────
