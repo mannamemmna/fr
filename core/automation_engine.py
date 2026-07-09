@@ -45,6 +45,9 @@ from config import (
     HEDGE_CHECK_INTERVAL_SEC,
     HEDGE_BALANCE_DROP_THRESHOLD,
     LIVE_DIFF_HOLD_MAX_MINUTES,
+    DELISTING_MONITOR_ENABLED,
+    DELISTING_CHECK_INTERVAL_SEC,
+    AUTO_CLOSE_ON_DELISTING_DETECTED,
 )
 from core.scanner import run_scan, read_opportunities
 from core.paper_engine import PaperEngine
@@ -52,6 +55,7 @@ from core.rebalance_engine import RebalanceEngine
 from core.spread_engine import SpreadEngine
 from core.market_cache import get_price_cache, get_funding_cache
 from core.live_engine import LiveEngine
+from core.delisting_monitor import get_blacklisted_symbols, is_blacklisted
 
 log = logging.getLogger("fr-bot.auto")
 
@@ -224,6 +228,7 @@ class AutomationEngine:
         self._last_scan: dict = {}
         self._last_log = time.time()
         self._delay_notified: set = set()   # simpan symbol yg sudah dinotifikasi delay
+        self._delisting_alerted: set = set()  # ← BARU, cegah spam alert simbol yang sama
 
     # ─── Properties ────────────────────────────────────────────────────
 
@@ -404,6 +409,15 @@ class AutomationEngine:
 
         if slots_available <= 0:
             return
+
+        # ─── DELISTING BLACKLIST FILTER ─────────────────────────────────────
+        blacklisted = get_blacklisted_symbols()
+        if blacklisted:
+            before_count = len(candidates)
+            candidates = [o for o in candidates if o["symbol"] not in blacklisted]
+            skipped = before_count - len(candidates)
+            if skipped:
+                log.info("LOOKING: %d kandidat di-skip karena blacklist delisting", skipped)
 
         new_targets = []
         for opp in candidates:
@@ -619,6 +633,7 @@ class AutomationEngine:
             }
             self._last_hedge_check = time.time()
             self._hedge_triggered = False
+            self._delisting_alerted.discard(order.symbol)  # reset alert untuk simbol ini
 
             mins_left = time_left / 60
             self._state = State.LIVE
@@ -735,6 +750,39 @@ class AutomationEngine:
 
         # Get current scan for this symbol
         symbol = pos["symbol"]
+
+        # ─── DELISTING GUARD ────────────────────────────────────────────────
+        if symbol not in self._delisting_alerted and is_blacklisted(symbol):
+            self._delisting_alerted.add(symbol)
+            self._emit_event(
+                "state_change",
+                f"🚨 *DELISTING TERDETEKSI* | {symbol}\n\n"
+                f"Simbol ini baru terdeteksi dari pengumuman delisting exchange.\n"
+                f"Posisi masih terbuka — segera evaluasi penutupan manual.\n\n"
+                f"_Gunakan /close {pos_id[:8]} untuk menutup, atau /blacklist info {symbol} untuk detail._"
+            )
+            if AUTO_CLOSE_ON_DELISTING_DETECTED:
+                log.warning("DELISTING: auto-closing %s (AUTO_CLOSE_ON_DELISTING_DETECTED=true)", symbol)
+                close_engine = self._paper if PAPER_MODE else (self._live_engine or self._paper)
+                result = close_engine.close_position(pos_id)
+                if result.get("ok"):
+                    self._emit_event(
+                        "close",
+                        f"🚨 *AUTO-CLOSE DELISTING* | {symbol}\n\n"
+                        f"Realized PnL: `{result.get('realized_pnl', 0):+.2f} USD`"
+                    )
+                else:
+                    self._emit_event("error", f"❌ Auto-close delisting gagal: {result.get('error', 'unknown')}")
+                self._live_position_id = None
+                self._live_order = None
+                self._funding_threshold_met = False
+                self._hedge_triggered = False
+                self._delisting_alerted.discard(symbol)
+                self._entry_balance_snapshot.clear()
+                self._state = State.IDLE
+                return
+
+        # Get current scan for this symbol
         scan = self._get_scan()
         current = None
         for opp in scan:

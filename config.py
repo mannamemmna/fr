@@ -91,5 +91,13 @@ LIVE_UNREALIZED_PNL_ENABLED: bool = os.getenv("LIVE_UNREALIZED_PNL_ENABLED", "tr
 # kena bleeding FR (misal 10 menit sebelum SHORT exchange bayar lagi).
 LIVE_DIFF_HOLD_MAX_MINUTES: int = int(os.getenv("LIVE_DIFF_HOLD_MAX_MINUTES", "40"))
 
+# ─── Delisting Protection ───
+DELISTING_MONITOR_ENABLED: bool = os.getenv("DELISTING_MONITOR_ENABLED", "true").lower() in ("true", "1", "yes")
+DELISTING_CHECK_INTERVAL_SEC: int = int(os.getenv("DELISTING_CHECK_INTERVAL_SEC", "3600"))
+# HATI-HATI: auto-close posisi terbuka begitu delisting terdeteksi (bukan cuma
+# alert). Default false — parsing judul itu best-effort, false positive bisa
+# menutup posisi yang sebenarnya aman. Aktifkan hanya kalau paham risikonya.
+AUTO_CLOSE_ON_DELISTING_DETECTED: bool = os.getenv("AUTO_CLOSE_ON_DELISTING_DETECTED", "false").lower() in ("true", "1", "yes")
+
 # ─── Display ───
 DEFAULT_TOP_N: int = int(os.getenv("DEFAULT_TOP_N", "10"))

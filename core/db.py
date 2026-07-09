@@ -75,19 +75,35 @@ class LocalDB:
             );
 
             CREATE TABLE IF NOT EXISTS funding_snapshot (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts REAL NOT NULL,
-                exchange TEXT NOT NULL,
-                symbol TEXT NOT NULL,
-                funding_rate REAL,
-                next_payment_rate REAL,
-                mark_price REAL,
-                next_funding_ts INTEGER
-            );
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ts REAL NOT NULL,
+                        exchange TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        funding_rate REAL,
+                        next_payment_rate REAL,
+                        mark_price REAL,
+                        next_funding_ts INTEGER
+                    );
 
-            CREATE INDEX IF NOT EXISTS idx_event_ts ON event_log(ts DESC);
-            CREATE INDEX IF NOT EXISTS idx_trade_ts ON trade_log(ts DESC);
-            CREATE INDEX IF NOT EXISTS idx_funding_sym ON funding_snapshot(symbol, ts DESC);
+                    CREATE TABLE IF NOT EXISTS delisting_blacklist (
+                        symbol TEXT PRIMARY KEY,
+                        exchange TEXT NOT NULL,
+                        confidence TEXT NOT NULL,      -- 'high' | 'manual'
+                        reason TEXT,
+                        delist_ts INTEGER,
+                        announcement_url TEXT,
+                        source_title TEXT,
+                        detected_at REAL NOT NULL
+                    );
+
+                    CREATE TABLE IF NOT EXISTS delisting_checkpoint (
+                        exchange TEXT PRIMARY KEY,
+                        last_seen_ts INTEGER NOT NULL
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_event_ts ON event_log(ts DESC);
+                    CREATE INDEX IF NOT EXISTS idx_trade_ts ON trade_log(ts DESC);
+                    CREATE INDEX IF NOT EXISTS idx_funding_sym ON funding_snapshot(symbol, ts DESC);
         """)
         conn.commit()
 
@@ -158,8 +174,64 @@ class LocalDB:
         )
         conn.commit()
 
+    # ─── Delisting blacklist ──────────────────────────────────────────
 
-    # ─── Singleton ──────────────────────────────────────────────────────────────
+    def add_to_blacklist(self, symbol: str, exchange: str, confidence: str,
+                          reason: str, delist_ts: Optional[int],
+                          announcement_url: str, source_title: str) -> bool:
+        """Insert kalau simbol belum ada di blacklist. Returns True kalau ini
+        entry BARU (perlu alert), False kalau sudah ada (skip re-alert)."""
+        conn = self._get_conn()
+        cur = conn.execute(
+            """INSERT OR IGNORE INTO delisting_blacklist
+               (symbol, exchange, confidence, reason, delist_ts, announcement_url, source_title, detected_at)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (symbol.upper(), exchange, confidence, reason, delist_ts,
+             announcement_url, source_title, time.time()),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+    def remove_from_blacklist(self, symbol: str) -> bool:
+        conn = self._get_conn()
+        cur = conn.execute("DELETE FROM delisting_blacklist WHERE symbol = ?", (symbol.upper(),))
+        conn.commit()
+        return cur.rowcount > 0
+
+    def is_blacklisted(self, symbol: str) -> bool:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT 1 FROM delisting_blacklist WHERE symbol = ?", (symbol.upper(),)
+        ).fetchone()
+        return row is not None
+
+    def get_blacklist(self) -> list[dict]:
+        conn = self._get_conn()
+        rows = conn.execute(
+            "SELECT * FROM delisting_blacklist ORDER BY detected_at DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_blacklisted_symbols(self) -> set[str]:
+        conn = self._get_conn()
+        rows = conn.execute("SELECT symbol FROM delisting_blacklist").fetchall()
+        return {r["symbol"] for r in rows}
+
+    def get_delisting_checkpoint(self, exchange: str) -> int:
+        conn = self._get_conn()
+        row = conn.execute(
+            "SELECT last_seen_ts FROM delisting_checkpoint WHERE exchange = ?", (exchange,)
+        ).fetchone()
+        return row["last_seen_ts"] if row else 0
+
+    def set_delisting_checkpoint(self, exchange: str, ts: int):
+        conn = self._get_conn()
+        conn.execute(
+            "INSERT INTO delisting_checkpoint (exchange, last_seen_ts) VALUES (?,?) "
+            "ON CONFLICT(exchange) DO UPDATE SET last_seen_ts = excluded.last_seen_ts",
+            (exchange, ts),
+        )
+        conn.commit()
 
 _db_instance: Optional[LocalDB] = None
 

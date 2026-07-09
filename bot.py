@@ -13,6 +13,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from config import (
     BOT_TOKEN, PAPER_MODE, AUTO_SCAN_INTERVAL, NOTIFY_CHAT_ID, AUTO_MODE,
     AUTO_CLOSE_ON_RESTART,
+    DELISTING_MONITOR_ENABLED,
 )
 from core.paper_engine import PaperEngine
 from core.live_engine import LiveEngine, LiveModeLockedError, MissingLiveCredentialsError
@@ -41,6 +42,8 @@ from handlers.health import cmd_health
 from handlers.help import cmd_help
 from handlers.pair import cmd_pair
 from handlers.rebalance import cmd_rebalance
+from core.delisting_monitor import start_delisting_monitor
+from handlers.blacklist import cmd_blacklist
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -179,6 +182,31 @@ def main():
             if AUTO_MODE:
                 state.auto_engine.enable()
 
+    # ── Delisting monitor notify callback ──
+    def _notify_delisting(symbol: str, exchange: str, confidence: str, title: str, url: str):
+        if not NOTIFY_CHAT_ID:
+            return
+        import requests
+        icon = "🔴" if confidence == "high" else "🟡"
+        msg = (
+            f"{icon} DELISTING TERDETEKSI\n\n"
+            f"Symbol: {symbol} ({exchange}, confidence={confidence})\n"
+            f"{title}\n\n"
+            f"Entry baru untuk {symbol} sekarang diblokir.\n"
+            f"{url}"
+        )
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                json={"chat_id": NOTIFY_CHAT_ID, "text": msg},
+                timeout=5,
+            )
+        except Exception:
+            log.warning("Gagal kirim alert delisting untuk %s", symbol)
+
+    if DELISTING_MONITOR_ENABLED:
+        start_delisting_monitor(notify_cb=_notify_delisting)
+
     # ── Handlers ──
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("status", cmd_status))
@@ -195,6 +223,7 @@ def main():
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("pair", cmd_pair))
     app.add_handler(CommandHandler("rebalance", cmd_rebalance))
+    app.add_handler(CommandHandler("blacklist", cmd_blacklist))
  
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
         import telegram.error as _te

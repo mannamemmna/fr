@@ -7,6 +7,8 @@ from telegram.ext import ContextTypes
 
 from config import DEFAULT_LEVERAGE
 from core.scanner import read_opportunities
+from core.delisting_monitor import is_blacklisted
+from core.db import get_db
 import handlers.state as state
 
 
@@ -29,6 +31,17 @@ async def cmd_execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     symbol = context.args[0].upper()
     amount = 100.0
     leverage = DEFAULT_LEVERAGE
+
+    if is_blacklisted(symbol):
+        entry = next((b for b in get_db().get_blacklist() if b["symbol"] == symbol), None)
+        reason = entry["reason"] if entry else "terdeteksi delisting"
+        await update.message.reply_text(
+            f"🚫 *{symbol} diblokir* — kemungkinan delisting.\n\n"
+            f"_{reason}_\n\n"
+            f"Gunakan `/blacklist remove {symbol}` kalau ini false positive.",
+            parse_mode="Markdown",
+        )
+        return
 
     if len(context.args) > 1:
         try:
