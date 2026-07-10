@@ -99,5 +99,11 @@ DELISTING_CHECK_INTERVAL_SEC: int = int(os.getenv("DELISTING_CHECK_INTERVAL_SEC"
 # menutup posisi yang sebenarnya aman. Aktifkan hanya kalau paham risikonya.
 AUTO_CLOSE_ON_DELISTING_DETECTED: bool = os.getenv("AUTO_CLOSE_ON_DELISTING_DETECTED", "false").lower() in ("true", "1", "yes")
 
+# ─── Delisting Protection — in-memory cache TTL for automation loop ───
+# Automation engine hits the DB less often by caching the blacklist set for
+# this many seconds. Independent from DELISTING_CHECK_INTERVAL_SEC (which
+# controls how often we poll exchanges for NEW announcements).
+DELISTING_BLACKLIST_CACHE_TTL_SEC: int = int(os.getenv("DELISTING_BLACKLIST_CACHE_TTL_SEC", "30"))
+
 # ─── Display ───
 DEFAULT_TOP_N: int = int(os.getenv("DEFAULT_TOP_N", "10"))

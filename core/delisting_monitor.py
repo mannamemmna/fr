@@ -187,17 +187,21 @@ def _process_kucoin(db, notify_cb) -> None:
                 notify_cb(sym, "kucoin", confidence, title, url)
             continue
 
-        # Fallback: delisting massal (spot/ST). Tetap diblokir (fail-safe),
-        # confidence 'manual' supaya operator tahu ini hasil parsing kasar.
+        # Fallback: delisting massal (spot/ST). Fail-safe: blacklist SEMUA
+        # simbol yang berhasil di-parse, apapun statusnya di `known` — cuma
+        # confidence yang berbeda. Simbol yang lagi tidak ada di scan tetap
+        # diblokir (manual confidence) supaya kalau dia muncul lagi di scan
+        # berikutnya, dia sudah terblokir duluan.
         for sym in _extract_multi_symbols(title, desc):
-            if sym in known:
-                is_new = db.add_to_blacklist(
-                    symbol=sym, exchange="kucoin", confidence="manual",
-                    reason=title, delist_ts=None, announcement_url=url, source_title=title,
-                )
-                if is_new:
-                    log.warning("DELISTING massal terdeteksi (KuCoin): %s — %s", sym, title)
-                    notify_cb(sym, "kucoin", "manual", title, url)
+            confidence = "high" if sym in known else "manual"
+            is_new = db.add_to_blacklist(
+                symbol=sym, exchange="kucoin", confidence=confidence,
+                reason=title, delist_ts=None, announcement_url=url, source_title=title,
+            )
+            if is_new:
+                log.warning("DELISTING massal terdeteksi (KuCoin, confidence=%s): %s — %s",
+                            confidence, sym, title)
+                notify_cb(sym, "kucoin", confidence, title, url)
 
     if newest_ts > checkpoint:
         db.set_delisting_checkpoint("kucoin", newest_ts)

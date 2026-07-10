@@ -48,6 +48,7 @@ from config import (
     DELISTING_MONITOR_ENABLED,
     DELISTING_CHECK_INTERVAL_SEC,
     AUTO_CLOSE_ON_DELISTING_DETECTED,
+    DELISTING_BLACKLIST_CACHE_TTL_SEC,
 )
 from core.scanner import run_scan, read_opportunities
 from core.paper_engine import PaperEngine
@@ -229,6 +230,8 @@ class AutomationEngine:
         self._last_log = time.time()
         self._delay_notified: set = set()   # simpan symbol yg sudah dinotifikasi delay
         self._delisting_alerted: set = set()  # ← BARU, cegah spam alert simbol yang sama
+        self._blacklist_cache: set[str] = set()  # cached blacklist symbols
+        self._last_blacklist_check: float = 0.0  # throttle blacklist DB hits
 
     # ─── Properties ────────────────────────────────────────────────────
 
@@ -411,7 +414,7 @@ class AutomationEngine:
             return
 
         # ─── DELISTING BLACKLIST FILTER ─────────────────────────────────────
-        blacklisted = get_blacklisted_symbols()
+        blacklisted = self._get_blacklist_cached(now)
         if blacklisted:
             before_count = len(candidates)
             candidates = [o for o in candidates if o["symbol"] not in blacklisted]
@@ -752,7 +755,7 @@ class AutomationEngine:
         symbol = pos["symbol"]
 
         # ─── DELISTING GUARD ────────────────────────────────────────────────
-        if symbol not in self._delisting_alerted and is_blacklisted(symbol):
+        if symbol not in self._delisting_alerted and symbol in self._get_blacklist_cached(now):
             self._delisting_alerted.add(symbol)
             self._emit_event(
                 "state_change",
@@ -1158,6 +1161,15 @@ class AutomationEngine:
             opps = data.get("opportunities", [])
         self._last_scan = data
         return opps
+
+    def _get_blacklist_cached(self, now: float) -> set[str]:
+        """Cached wrapper around get_blacklisted_symbols() to avoid hitting
+        SQLite on every automation tick. Refreshed every
+        DELISTING_BLACKLIST_CACHE_TTL_SEC seconds."""
+        if now - self._last_blacklist_check >= DELISTING_BLACKLIST_CACHE_TTL_SEC:
+            self._blacklist_cache = get_blacklisted_symbols()
+            self._last_blacklist_check = now
+        return self._blacklist_cache
 
     def _in_funding_window(self, now: float) -> bool:
         """Check if any pair has its dominant-exchange funding within AUTO_ENTRY_WINDOW_MIN."""
