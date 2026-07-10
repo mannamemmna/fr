@@ -301,3 +301,53 @@ class BybitLiveClient:
         status = "complete" if raw_status.lower() == "success" else \
                  "failed" if raw_status.lower() in ("reject", "fail", "cancelbyuser") else "pending"
         return {"status": status, "raw": row}
+
+    # ─── Deposit detection + internal transfer (UTA 2.0) ────────────────
+
+    def get_recent_deposits(self, coin: str = "USDT", limit: int = 20) -> list[dict]:
+        """Query recent on-chain deposits landing in the Funding Account."""
+        j = self._request("GET", "/v5/asset/deposit/query-record", {"coin": coin, "limit": limit})
+        return j.get("result", {}).get("rows", [])
+
+    def find_deposit_by_amount_and_address(self, coin: str, expected_amount: float,
+                                            address: str, since_ts: float) -> Optional[dict]:
+        """Best-effort match: look for a deposit matching our expected transfer.
+        Bybit's deposit record doesn't echo back our withdrawal's client_id, so we
+        match on (coin, address, amount within tolerance, timestamp after since_ts)."""
+        rows = self.get_recent_deposits(coin)
+        for row in rows:
+            if row.get("toAddress", "").lower() != address.lower():
+                continue
+            amt = float(row.get("amount", 0) or 0)
+            if abs(amt - expected_amount) > max(0.01, expected_amount * 0.001):  # 0.1% tolerance for network fee deduction differences
+                continue
+            row_ts = int(row.get("successAt", 0) or 0) / 1000
+            if row_ts and row_ts < since_ts:
+                continue
+            if str(row.get("status")) in ("3",):  # "3" = success per Bybit deposit status enum
+                return row
+        return None
+
+    def transfer_funding_to_unified(self, coin: str, amount: float, *, transfer_id: str) -> dict:
+        """Internal transfer: Funding Account → Unified Trading Account.
+        Required for UTA 2.0 so deposited funds become usable margin."""
+        body = {
+            "transferId": transfer_id,  # idempotency — MUST be unique per attempt
+            "coin": coin,
+            "amount": str(amount),
+            "fromAccountType": "FUND",
+            "toAccountType": "UNIFIED",
+        }
+        j = self._request("POST", "/v5/asset/transfer/inter-transfer", body=body)
+        return {"transfer_id": j.get("result", {}).get("transferId"), "raw": j}
+
+    def get_internal_transfer_status(self, transfer_id: str) -> dict:
+        j = self._request("GET", "/v5/asset/transfer/query-inter-transfer-list",
+                           {"transferId": transfer_id})
+        rows = j.get("result", {}).get("list", [])
+        if not rows:
+            return {"status": "unknown"}
+        raw_status = rows[0].get("status", "")
+        status = "complete" if raw_status == "SUCCESS" else \
+                 "failed" if raw_status == "FAILED" else "pending"
+        return {"status": status, "raw": rows[0]}

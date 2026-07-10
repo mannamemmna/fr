@@ -41,6 +41,10 @@ from config import (
     REBALANCE_MAX_TRANSFER_USD,
     REBALANCE_WITHDRAW_POLL_INTERVAL_SEC,
     REBALANCE_WITHDRAW_POLL_TIMEOUT_SEC,
+    REBALANCE_DEPOSIT_POLL_INTERVAL_SEC,
+    REBALANCE_DEPOSIT_POLL_TIMEOUT_SEC,
+    REBALANCE_INTERNAL_TRANSFER_POLL_INTERVAL_SEC,
+    REBALANCE_INTERNAL_TRANSFER_POLL_TIMEOUT_SEC,
     DATA_DIR,
 )
 
@@ -86,8 +90,10 @@ class RebalanceEngine:
         self._last_check_time: float = 0.0
         self._enabled = True  # can be toggled via /rebalance
 
-        # Live transfer state
+        # Live transfer state machine
         self._live_withdraw_poll: Optional[Dict[str, Any]] = None
+        self._live_deposit_poll: Optional[Dict[str, Any]] = None
+        self._live_internal_transfer_poll: Optional[Dict[str, Any]] = None
         self._last_check_time: float = 0.0
 
     @property
@@ -300,6 +306,58 @@ class RebalanceEngine:
         # for the failure/dry-run path specifically — wire into event_callback
         # if RebalanceEngine gets one, or surface via get_status()["last_message"].
 
+    # ── Phase transitions ──────────────────────────────────────────────
+
+    def _on_withdraw_complete(self, poll: dict):
+        """Called when source-exchange withdrawal status becomes 'complete'.
+        Kicks off destination-side deposit detection instead of finishing."""
+        record = poll["record"]
+        dest_client = self._engine.kucoin if record["to"] == "kucoin" else self._engine.bybit
+        self._live_deposit_poll = {
+            "client": dest_client,
+            "to_exchange": record["to"],
+            "coin": record["token"],
+            "amount": record["amount"],
+            "address": record["address"],
+            "since_ts": record["ts"],
+            "deadline": time.time() + REBALANCE_DEPOSIT_POLL_TIMEOUT_SEC,
+            "record": record,
+        }
+        _log_transfer({**record, "type": "withdraw_complete_awaiting_deposit"})
+        self._live_withdraw_poll = None
+
+    def _on_deposit_confirmed(self, poll: dict, deposit_row: dict):
+        record = poll["record"]
+        _log_transfer({**record, "type": "deposit_confirmed", "deposit_row": deposit_row})
+
+        transfer_id = f"frbot-reb-int-{uuid.uuid4().hex[:16]}"
+        try:
+            if record["to"] == "bybit":
+                result = self._engine.bybit.transfer_funding_to_unified(
+                    record["token"], record["amount"], transfer_id=transfer_id)
+            else:
+                result = self._engine.kucoin.transfer_main_to_futures(
+                    record["token"], record["amount"], client_oid=transfer_id)
+        except Exception as e:
+            log.error("[REBALANCE] internal transfer call failed: %s", e)
+            _log_transfer({**record, "type": "internal_transfer_call_failed", "error": str(e)})
+            self._live_deposit_poll = None
+            self._is_rebalancing = False  # stop the automation lock; needs manual intervention
+            return
+
+        _log_transfer({**record, "type": "internal_transfer_submitted",
+                        "transfer_id": result.get("transfer_id")})
+        self._live_internal_transfer_poll = {
+            "to_exchange": record["to"],
+            "transfer_id": result.get("transfer_id"),
+            "deadline": time.time() + REBALANCE_INTERNAL_TRANSFER_POLL_TIMEOUT_SEC,
+            "record": record,
+            # Bybit inter-transfer is async-ish (poll it); KuCoin universal-transfer
+            # is synchronous — if the call above didn't raise, treat as complete.
+            "assume_complete": record["to"] == "kucoin",
+        }
+        self._live_deposit_poll = None
+
     # ── Tick ────────────────────────────────────────────────────────────
 
     def tick(self, now: float) -> str:
@@ -321,36 +379,83 @@ class RebalanceEngine:
                 return "done"
             return "waiting"
 
-        # Live mode with an in-flight withdrawal
-        poll = getattr(self, "_live_withdraw_poll", None)
-        if poll:
+        # ── Phase 1: waiting for source-exchange withdrawal to complete ──
+        wpoll = getattr(self, "_live_withdraw_poll", None)
+        if wpoll:
             if now - self._last_check_time < REBALANCE_WITHDRAW_POLL_INTERVAL_SEC:
                 return "waiting"
             self._last_check_time = now
             try:
-                wd_status = poll["client"].get_withdrawal_status(poll["withdraw_id"])
+                wd_status = wpoll["client"].get_withdrawal_status(wpoll["withdraw_id"])
             except Exception:
                 log.exception("[REBALANCE] withdrawal status check failed")
                 return "waiting"
-
             if wd_status["status"] == "complete":
-                _log_transfer({**poll["record"], "type": "withdraw_complete"})
-                self._live_withdraw_poll = None
-                self._is_rebalancing = False
-                log.info("[REBALANCE] Withdrawal confirmed complete")
-                return "done"
+                self._on_withdraw_complete(wpoll)
+                return "waiting"
             if wd_status["status"] == "failed":
-                _log_transfer({**poll["record"], "type": "withdraw_failed", "raw": wd_status.get("raw")})
+                _log_transfer({**wpoll["record"], "type": "withdraw_failed"})
                 self._live_withdraw_poll = None
                 self._is_rebalancing = False
-                log.error("[REBALANCE] Withdrawal FAILED — manual check required")
                 return "failed"
-            if now >= poll["deadline"]:
+            if now >= wpoll["deadline"]:
                 log.error("[REBALANCE] Withdrawal poll TIMEOUT — status unknown, manual check required")
-                return "waiting"  # keep polling; do not silently give up
             return "waiting"
 
-        # No in-flight withdrawal and not paper → fall back to old balance-poll behavior
+        # ── Phase 2: waiting for deposit to land on destination exchange ──
+        dpoll = getattr(self, "_live_deposit_poll", None)
+        if dpoll:
+            if now - self._last_check_time < REBALANCE_DEPOSIT_POLL_INTERVAL_SEC:
+                return "waiting"
+            self._last_check_time = now
+            try:
+                deposit = dpoll["client"].find_deposit_by_amount_and_address(
+                    dpoll["coin"], dpoll["amount"], dpoll["address"], dpoll["since_ts"])
+            except Exception:
+                log.exception("[REBALANCE] deposit lookup failed")
+                return "waiting"
+            if deposit:
+                self._on_deposit_confirmed(dpoll, deposit)
+                return "waiting"
+            if now >= dpoll["deadline"]:
+                log.error("[REBALANCE] Deposit poll TIMEOUT (%ds) — funds on-chain but not yet "
+                          "detected on %s. Manual check required.",
+                          REBALANCE_DEPOSIT_POLL_TIMEOUT_SEC, dpoll["to_exchange"])
+            return "waiting"
+
+        # ── Phase 3: waiting for internal transfer (Funding/Main → Trading) ──
+        ipoll = getattr(self, "_live_internal_transfer_poll", None)
+        if ipoll:
+            if ipoll.get("assume_complete"):
+                _log_transfer({**ipoll["record"], "type": "internal_transfer_complete"})
+                self._live_internal_transfer_poll = None
+                self._is_rebalancing = False
+                log.info("[REBALANCE] Internal transfer complete (synchronous) — rebalance done")
+                return "done"
+
+            if now - self._last_check_time < REBALANCE_INTERNAL_TRANSFER_POLL_INTERVAL_SEC:
+                return "waiting"
+            self._last_check_time = now
+            try:
+                it_status = self._engine.bybit.get_internal_transfer_status(ipoll["transfer_id"])
+            except Exception:
+                log.exception("[REBALANCE] internal transfer status check failed")
+                return "waiting"
+            if it_status["status"] == "complete":
+                _log_transfer({**ipoll["record"], "type": "internal_transfer_complete"})
+                self._live_internal_transfer_poll = None
+                self._is_rebalancing = False
+                return "done"
+            if it_status["status"] == "failed":
+                _log_transfer({**ipoll["record"], "type": "internal_transfer_failed"})
+                self._live_internal_transfer_poll = None
+                self._is_rebalancing = False
+                return "failed"
+            if now >= ipoll["deadline"]:
+                log.error("[REBALANCE] Internal transfer poll TIMEOUT — manual check required")
+            return "waiting"
+
+        # No in-flight phase and not paper → fall back to old balance-poll behavior
         # (covers REBALANCE_LIVE_TRANSFER_ENABLED=false path)
         if now - self._last_check_time < REBALANCE_CHECK_INTERVAL_SEC:
             return "waiting"

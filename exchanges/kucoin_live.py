@@ -232,3 +232,48 @@ class KuCoinLiveClient:
         status = "complete" if raw_status == "SUCCESS" else \
                  "failed" if raw_status in ("FAILURE",) else "pending"
         return {"status": status, "raw": data}
+
+    # ─── Deposit detection + internal transfer (Main → Futures) ────────
+
+    def get_recent_deposits(self, currency: str = "USDT", limit: int = 20) -> list[dict]:
+        """Query recent on-chain deposits landing in the Main Account."""
+        j = self._request("GET", "/api/v1/deposit-list", {"currency": currency, "limit": limit})
+        return j.get("data", {}).get("items", [])
+
+    def find_deposit_by_amount_and_address(self, currency: str, expected_amount: float,
+                                            address: str, since_ts: float) -> Optional[dict]:
+        rows = self.get_recent_deposits(currency)
+        for row in rows:
+            if row.get("address", "").lower() != address.lower():
+                continue
+            amt = float(row.get("amount", 0) or 0)
+            if abs(amt - expected_amount) > max(0.01, expected_amount * 0.001):
+                continue
+            row_ts = int(row.get("createdAt", 0) or 0) / 1000
+            if row_ts and row_ts < since_ts:
+                continue
+            if row.get("status") == "SUCCESS":
+                return row
+        return None
+
+    def transfer_main_to_futures(self, currency: str, amount: float, *, client_oid: str) -> dict:
+        """Internal transfer: Main Account → Futures Account."""
+        body = {
+            "clientOid": client_oid,  # idempotency
+            "currency": currency,
+            "amount": str(amount),
+            "from": "main",
+            "to": "futures",
+        }
+        with get_limiter("kucoin", 10):
+            j = self._request("POST", "/api/v3/accounts/universal-transfer", body=body)
+        return {"transfer_id": j.get("data", {}).get("orderId") or client_oid, "raw": j}
+
+    def get_internal_transfer_status(self, client_oid: str) -> dict:
+        """KuCoin universal-transfer is typically synchronous — success/failure is
+        returned in the original POST response. This poller exists mainly to
+        handle the resume-after-restart case where we only persisted the
+        client_oid and need to re-check via a transfer-history lookup."""
+        with get_limiter("kucoin", 10):
+            j = self._request("GET", "/api/v3/accounts/transferable", {"currency": "USDT", "type": "FUTURES"})
+        return {"status": "unknown", "raw": j}
