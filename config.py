@@ -70,6 +70,48 @@ REBALANCE_PAPER_DELAY_SEC: int = int(os.getenv("REBALANCE_PAPER_DELAY_SEC", "5")
 REBALANCE_CHECK_INTERVAL_SEC: int = int(os.getenv("REBALANCE_CHECK_INTERVAL_SEC", "60"))
 REBALANCE_AUTO_TRANSFER: bool = os.getenv("REBALANCE_AUTO_TRANSFER", "false").lower() in ("true", "1", "yes")
 
+# ─── Live CEX-to-CEX Withdrawal (real fund movement) ───
+REBALANCE_LIVE_TRANSFER_ENABLED: bool = os.getenv("REBALANCE_LIVE_TRANSFER_ENABLED", "false").lower() in ("true", "1", "yes")
+REBALANCE_LIVE_DRY_RUN: bool = os.getenv("REBALANCE_LIVE_DRY_RUN", "true").lower() in ("true", "1", "yes")
+
+REBALANCE_TOKEN: str = os.getenv("REBALANCE_TOKEN", "USDT")
+REBALANCE_NETWORK: str = os.getenv("REBALANCE_NETWORK", "TRON")  # TRON | BSC | BASE | ARBITRUM
+
+# Destination = address on the RECEIVING exchange for that network.
+REBALANCE_BYBIT_DEPOSIT_ADDRESS: str = os.getenv("REBALANCE_BYBIT_DEPOSIT_ADDRESS", "")
+REBALANCE_KUCOIN_DEPOSIT_ADDRESS: str = os.getenv("REBALANCE_KUCOIN_DEPOSIT_ADDRESS", "")
+# Optional memo/tag (not needed for TRON/BSC/BASE/ARBITRUM USDT, kept for future chains)
+REBALANCE_BYBIT_DEPOSIT_MEMO: str = os.getenv("REBALANCE_BYBIT_DEPOSIT_MEMO", "")
+REBALANCE_KUCOIN_DEPOSIT_MEMO: str = os.getenv("REBALANCE_KUCOIN_DEPOSIT_MEMO", "")
+
+# Hard safety caps — withdrawal request rejected client-side if outside range.
+REBALANCE_MIN_TRANSFER_USD: float = float(os.getenv("REBALANCE_MIN_TRANSFER_USD", "20"))
+REBALANCE_MAX_TRANSFER_USD: float = float(os.getenv("REBALANCE_MAX_TRANSFER_USD", "500"))
+
+REBALANCE_WITHDRAW_POLL_INTERVAL_SEC: float = float(os.getenv("REBALANCE_WITHDRAW_POLL_INTERVAL_SEC", "15"))
+REBALANCE_WITHDRAW_POLL_TIMEOUT_SEC: float = float(os.getenv("REBALANCE_WITHDRAW_POLL_TIMEOUT_SEC", "1800"))
+
+# ─── Hedge Integrity ───
+REBALANCE_LIVE_TRANSFER_ENABLED: bool = os.getenv("REBALANCE_LIVE_TRANSFER_ENABLED", "false").lower() in ("true", "1", "yes")
+REBALANCE_LIVE_DRY_RUN: bool = os.getenv("REBALANCE_LIVE_DRY_RUN", "true").lower() in ("true", "1", "yes")
+
+REBALANCE_TOKEN: str = os.getenv("REBALANCE_TOKEN", "USDT")
+REBALANCE_NETWORK: str = os.getenv("REBALANCE_NETWORK", "TRON")  # TRON | BSC | BASE | ARBITRUM
+
+# Destination = address on the RECEIVING exchange for that network.
+REBALANCE_BYBIT_DEPOSIT_ADDRESS: str = os.getenv("REBALANCE_BYBIT_DEPOSIT_ADDRESS", "")
+REBALANCE_KUCOIN_DEPOSIT_ADDRESS: str = os.getenv("REBALANCE_KUCOIN_DEPOSIT_ADDRESS", "")
+# Optional memo/tag (not needed for TRON/BSC/BASE/ARBITRUM USDT, kept for future chains)
+REBALANCE_BYBIT_DEPOSIT_MEMO: str = os.getenv("REBALANCE_BYBIT_DEPOSIT_MEMO", "")
+REBALANCE_KUCOIN_DEPOSIT_MEMO: str = os.getenv("REBALANCE_KUCOIN_DEPOSIT_MEMO", "")
+
+# Hard safety caps — withdrawal request rejected client-side if outside range.
+REBALANCE_MIN_TRANSFER_USD: float = float(os.getenv("REBALANCE_MIN_TRANSFER_USD", "20"))
+REBALANCE_MAX_TRANSFER_USD: float = float(os.getenv("REBALANCE_MAX_TRANSFER_USD", "500"))
+
+REBALANCE_WITHDRAW_POLL_INTERVAL_SEC: float = float(os.getenv("REBALANCE_WITHDRAW_POLL_INTERVAL_SEC", "15"))
+REBALANCE_WITHDRAW_POLL_TIMEOUT_SEC: float = float(os.getenv("REBALANCE_WITHDRAW_POLL_TIMEOUT_SEC", "1800"))
+
 # ─── Hedge Integrity ───
 HEDGE_EMERGENCY_OPEN: bool = os.getenv("HEDGE_EMERGENCY_OPEN", "true").lower() in ("true", "1", "yes")
 HEDGE_CHECK_INTERVAL_SEC: int = int(os.getenv("HEDGE_CHECK_INTERVAL_SEC", "30"))

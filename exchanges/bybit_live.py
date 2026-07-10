@@ -248,3 +248,56 @@ class BybitLiveClient:
         except Exception:
             log.exception("Bybit get_position_size failed")
             return -1.0
+
+    # ─── Withdrawal methods (for live rebalance) ────────────────────────
+
+    CHAIN_CODE_MAP_BYBIT = {
+        "TRON": "TRX",
+        "BSC": "BSC",
+        "BASE": "BASE",
+        "ARBITRUM": "ARBI",
+    }
+
+    def get_coin_chains(self, coin: str = "USDT") -> list[dict]:
+        """Fetch supported chains + min withdraw + fee for *coin*. Call this once
+        at startup / before enabling live transfer to VERIFY chain codes."""
+        j = self._request("GET", "/v5/asset/coin/query-info", {"coin": coin})
+        rows = j.get("result", {}).get("rows", [])
+        if not rows:
+            return []
+        lot = rows[0].get("chains", [])
+        return lot  # each: {chain, chainType, withdrawFee, minWithdraw, ...}
+
+    def withdraw(self, coin: str, network: str, address: str, amount: float,
+                  *, client_id: str, memo: str | None = None) -> dict[str, Any]:
+        """Withdraw *coin* to *address* on *network*. network is our internal
+        name (TRON/BSC/BASE/ARBITRUM), mapped to Bybit's chain code."""
+        chain = self.CHAIN_CODE_MAP_BYBIT.get(network.upper())
+        if not chain:
+            raise ValueError(f"Unsupported network for Bybit withdraw: {network}")
+        body = {
+            "coin": coin,
+            "chain": chain,
+            "address": address,
+            "amount": str(amount),
+            "timestamp": int(time.time() * 1000),
+            "forceChain": 0,
+            "accountType": "FUND",
+            "requestId": client_id,  # idempotency
+        }
+        if memo:
+            body["tag"] = memo
+        j = self._request("POST", "/v5/asset/withdraw/create", body=body)
+        return {"withdraw_id": j.get("result", {}).get("id"), "raw": j}
+
+    def get_withdrawal_status(self, withdraw_id: str) -> dict[str, Any]:
+        j = self._request("GET", "/v5/asset/withdraw/query-record", {"withdrawID": withdraw_id})
+        rows = j.get("result", {}).get("rows", [])
+        if not rows:
+            return {"status": "unknown"}
+        row = rows[0]
+        # Bybit status codes: SecurityCheck/Pending/success/CancelByUser/Reject/Fail/...
+        raw_status = row.get("status", "")
+        status = "complete" if raw_status.lower() == "success" else \
+                 "failed" if raw_status.lower() in ("reject", "fail", "cancelbyuser") else "pending"
+        return {"status": status, "raw": row}

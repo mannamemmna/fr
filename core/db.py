@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -232,6 +233,24 @@ class LocalDB:
             (exchange, ts),
         )
         conn.commit()
+
+    # ─── Rebalance Transfers ──────────────────────────────────────────────
+
+    def get_recent_transfers(self, limit: int = 5) -> list[dict]:
+        if not os.path.exists(TRANSFER_LOG_FILE):
+            return []
+        results = []
+        with open(TRANSFER_LOG_FILE, "r") as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        results.append(json.loads(line.strip()))
+                    except json.JSONDecodeError:
+                        pass
+        results.sort(key=lambda x: x.get("ts", 0), reverse=True)
+        return results[:limit]
+
+
 
 _db_instance: Optional[LocalDB] = None
 

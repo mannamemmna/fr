@@ -187,3 +187,48 @@ class KuCoinLiveClient:
         except Exception:
             log.exception("KuCoin get_position_size failed")
             return -1.0
+
+    # ─── Withdrawal methods (for live rebalance) ────────────────────────
+
+    CHAIN_CODE_MAP_KUCOIN = {
+        "TRON": "trx",
+        "BSC": "bsc",
+        "BASE": "base",
+        "ARBITRUM": "arbitrum",
+    }
+
+    def get_withdraw_quota(self, currency: str = "USDT", chain: str | None = None) -> dict:
+        params = {"currency": currency}
+        if chain:
+            params["chain"] = chain
+        j = self._request("GET", "/api/v1/withdrawals/quotas", params)
+        return j.get("data", {})
+
+    def withdraw(self, coin: str, network: str, address: str, amount: float,
+                  *, client_id: str, memo: str | None = None) -> dict[str, Any]:
+        chain = self.CHAIN_CODE_MAP_KUCOIN.get(network.upper())
+        if not chain:
+            raise ValueError(f"Unsupported network for KuCoin withdraw: {network}")
+        body = {
+            "currency": coin,
+            "address": address,
+            "amount": str(amount),
+            "chain": chain,
+            "withdrawType": "ADDRESS",
+            "isInner": False,
+            "clientOid": client_id,
+        }
+        if memo:
+            body["memo"] = memo
+        with get_limiter("kucoin", 10):
+            j = self._request("POST", "/api/v1/withdrawals", body=body)
+        return {"withdraw_id": j.get("data", {}).get("withdrawalId"), "raw": j}
+
+    def get_withdrawal_status(self, withdraw_id: str) -> dict[str, Any]:
+        with get_limiter("kucoin", 10):
+            j = self._request("GET", f"/api/v1/withdrawals/{withdraw_id}")
+        data = j.get("data", {})
+        raw_status = data.get("status", "")
+        status = "complete" if raw_status == "SUCCESS" else \
+                 "failed" if raw_status in ("FAILURE",) else "pending"
+        return {"status": status, "raw": data}

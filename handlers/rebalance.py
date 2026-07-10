@@ -32,6 +32,19 @@ async def cmd_rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rb.toggle(False)
             await update.message.reply_text("🔴 Auto rebalance OFF")
             return
+        elif sub == "transfers":
+            from core.db import get_db
+            db = get_db()
+            transfers = db.get_recent_transfers(5)
+            if not transfers:
+                await update.message.reply_text("📭 Tidak ada riwayat transfer.")
+                return
+            lines = ["*📋 TRANSFER TERAKHIR (5)*"]
+            for t in transfers:
+                icon = "🟢" if t.get("type") == "withdraw_complete" else ("🔴" if "fail" in t.get("type", "") else "🟡")
+                lines.append(f"{icon} `{t.get('client_id', '')[:12]}` | {t.get('from','?')}→{t.get('to','?')} | ${t.get('amount',0):.2f} | {t.get('type','?')}")
+            await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            return
 
     status = rb.get_status()
     bb_pct = status["ratio_bybit"]
@@ -70,6 +83,7 @@ async def cmd_rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚙️ *Subcommands:*",
         "`/rebalance on` — Aktifkan auto rebalance",
         "`/rebalance off` — Nonaktifkan auto rebalance",
+        "`/rebalance transfers` — Lihat 5 transfer terakhir",
     ]
 
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
