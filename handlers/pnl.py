@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from core.tg_format import b, code, esc
 import handlers.state as state
 
 
@@ -36,21 +37,28 @@ async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if delta <= timedelta(days=30):
             pnl_30d += rpnl
 
+    bal_s = f"${summary['balance']:.2f}"
+    real_s = f"{summary['realized_pnl']:+.2f} USD"
+    unreal_s = f"{summary['unrealized_pnl']:+.2f} USD"
+    total_s = f"{summary['total_pnl']:+.2f} USD"
+    fees_s = f"{summary['total_fees']:.2f} USD"
+    fund_s = f"{summary['total_funding_pnl']:.2f} USD"
+
     lines = [
-        "*💰 P&L SUMMARY*\n",
-        f"📅 1 Hari: `{pnl_1d:+.2f}` | 7 Hari: `{pnl_7d:+.2f}` | 30 Hari: `{pnl_30d:+.2f}`\n",
-        f"Saldo: `${summary['balance']:.2f}`\n",
-        f"Sudah direalisasi: `{summary['realized_pnl']:+.2f} USD`\n"
-        f"Belum direalisasi: `{summary['unrealized_pnl']:+.2f} USD`\n"
-        f"Total PnL: `{summary['total_pnl']:+.2f} USD`\n",
-        f"Total biaya: `{summary['total_fees']:.2f} USD`\n"
-        f"Est. funding diterima: `{summary['total_funding_pnl']:.2f} USD`\n",
+        f"{b('💰 P&amp;L SUMMARY')}\n",
+        f"📅 1 Hari: {code(f'{pnl_1d:+.2f}')} | 7 Hari: {code(f'{pnl_7d:+.2f}')} | 30 Hari: {code(f'{pnl_30d:+.2f}')}\n",
+        f"Saldo: {code(bal_s)}\n",
+        f"Sudah direalisasi: {code(real_s)}\n"
+        f"Belum direalisasi: {code(unreal_s)}\n"
+        f"Total PnL: {code(total_s)}\n",
+        f"Total biaya: {code(fees_s)}\n"
+        f"Est. funding diterima: {code(fund_s)}\n",
     ]
 
     if closed:
-        lines.append("*5 Trade Terakhir:*")
+        lines.append(b("5 Trade Terakhir:"))
         for p in closed[-5:]:
-            sym = p["symbol"]
+            sym = esc(p["symbol"])
             pnl = p.get("realized_pnl", 0)
             total_fee = p.get("total_fee", 0)
             price_pnl = p.get("total_price_pnl", 0)
@@ -59,8 +67,8 @@ async def cmd_pnl(update: Update, context: ContextTypes.DEFAULT_TYPE):
             fr_received = p.get("fr_received", 0)
             sign = "✅" if pnl >= 0 else "❌"
             lines.append(
-                f"{sign} *{sym}*  PnL: `{pnl:+.2f}`  "
-                f"(Harga: `{price_pnl:+.2f}` | FR terima: `{fr_received:.2f}` | FR bayar: `{fr_paid:.2f}` | Fee: `{total_fee:.2f}`)"
+                f"{sign} {b(sym)}  PnL: {code(f'{pnl:+.2f}')}  "
+                f"(Harga: {code(f'{price_pnl:+.2f}')} | FR terima: {code(f'{fr_received:.2f}')} | FR bayar: {code(f'{fr_paid:.2f}')} | Fee: {code(f'{total_fee:.2f}')})"
             )
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")

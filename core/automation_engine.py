@@ -58,6 +58,8 @@ from core.market_cache import get_price_cache, get_funding_cache
 from core.live_engine import LiveEngine
 from core.delisting_monitor import get_blacklisted_symbols, is_blacklisted
 
+from core.tg_format import b, i, code, esc
+
 log = logging.getLogger("fr-bot.auto")
 
 
@@ -139,7 +141,7 @@ def _format_trade_summary(result: dict, symbol: str, entry_spread: float,
                         current_spread: float, entry_delta: float, current_delta: float) -> str:
     """Format a full trade summary message after close."""
     if not result.get("ok"):
-        return f"❌ *AUTO CLOSE FAILED* — {symbol}\nError: {result.get('error', 'unknown')}"
+        return f"❌ {b('AUTO CLOSE FAILED')} — {esc(symbol)}\nError: {esc(result.get('error', 'unknown'))}"
 
     price_pnl = float(result.get("price_pnl", 0) or 0)
     funding_pnl = float(result.get("funding_pnl", 0) or 0)
@@ -165,30 +167,34 @@ def _format_trade_summary(result: dict, symbol: str, entry_spread: float,
     # PnL emoji
     pnl_emoji = "🟢" if realized_pnl >= 0 else "🔴"
 
+    balance_after_str = f"${float(result.get('balance_after', 0) or 0):.2f} USD"
+    bb_fee_total = f"-{entry_fee_bb+exit_fee_bb:.4f}"
+    kc_fee_total = f"-{entry_fee_kc+exit_fee_kc:.4f}"
+
     lines = [
-        f"{pnl_emoji} *AUTO CLOSE — TRADE SUMMARY*",
+        f"{pnl_emoji} {b('AUTO CLOSE — TRADE SUMMARY')}",
         "",
-        f"*Pair:* `{symbol}`",
-        f"*Position:* `${amount_usd:.0f}` × {leverage}x = `${position_size:.0f}`",
-        f"*Direction:* {side_bb} Bybit / {side_kc} KuCoin",
-        f"",
-        f"━━━ *FUNDING* ━━━",
-        f"Diff FR: `{entry_delta:.4f}%` → `{current_delta:.4f}%`",
-        f"",
-        f"━━━ *PRICE* ━━━",
-        f"Bybit: `{entry_price_bb}` → `{exit_price_bb}`",
-        f"KuCoin: `{entry_price_kc}` → `{exit_price_kc}`",
-        f"",
-        f"━━━ *P&L BREAKDOWN* ━━━",
-        f"Price PnL: `{price_pnl:+.2f} USD`",
-        f"Funding: `{funding_pnl:+.4f} USD` (terima: `{fr_received:.2f}` | bayar: `{fr_paid:.2f}`)",
-        f"Fees: `—{total_fee:.4f} USD`",
-        f"│ Bybit: `—{entry_fee_bb:.4f}` (entry) + `—{exit_fee_bb:.4f}` (exit) = `—{entry_fee_bb+exit_fee_bb:.4f}`",
-        f"│ KuCoin: `—{entry_fee_kc:.4f}` (entry) + `—{exit_fee_kc:.4f}` (exit) = `—{entry_fee_kc+exit_fee_kc:.4f}`",
-        f"",
-        f"━━━ *RESULT* ━━━",
-        f"Realized PnL: *{realized_pnl:+.4f} USD*",
-        f"Balance: `${float(result.get('balance_after', 0) or 0):.2f} USD`",
+        f"{b('Pair:')} {code(symbol)}",
+        f"{b('Position:')} {code(f'${amount_usd:.0f}')} × {leverage}x = {code(f'${position_size:.0f}')}",
+        f"{b('Direction:')} {esc(side_bb)} Bybit / {esc(side_kc)} KuCoin",
+        "",
+        f"━━━ {b('FUNDING')} ━━━",
+        f"Diff FR: {code(f'{entry_delta:.4f}%')} → {code(f'{current_delta:.4f}%')}",
+        "",
+        f"━━━ {b('PRICE')} ━━━",
+        f"Bybit: {code(entry_price_bb)} → {code(exit_price_bb)}",
+        f"KuCoin: {code(entry_price_kc)} → {code(exit_price_kc)}",
+        "",
+        f"━━━ {b('P&L BREAKDOWN')} ━━━",
+        f"Price PnL: {code(f'{price_pnl:+.2f} USD')}",
+        f"Funding: {code(f'{funding_pnl:+.4f} USD')} (terima: {code(f'{fr_received:.2f}')} | bayar: {code(f'{fr_paid:.2f}')})",
+        f"Fees: {code(f'-{total_fee:.4f} USD')}",
+        f"│ Bybit: {code(f'-{entry_fee_bb:.4f}')} (entry) + {code(f'-{exit_fee_bb:.4f}')} (exit) = {code(bb_fee_total)}",
+        f"│ KuCoin: {code(f'-{entry_fee_kc:.4f}')} (entry) + {code(f'-{exit_fee_kc:.4f}')} (exit) = {code(kc_fee_total)}",
+        "",
+        f"━━━ {b('RESULT')} ━━━",
+        f"Realized PnL: {b(f'{realized_pnl:+.4f} USD')}",
+        f"Balance: {code(balance_after_str)}",
     ]
 
     return "\n".join(lines)
@@ -478,20 +484,22 @@ class AutomationEngine:
                 "LOOKING → DELAY: %s  spread=%.4f%%  delta=%.4f%%  %s  BB_iv=%dh  KC_iv=%dh",
                 best["symbol"], price_spread, best["delta_pct"], best["direction"], bb_iv, kc_iv,
             )
+            delta_str = f"{best['delta_pct']:.4f}%"
+            raw_diff_str = f"{(best.get('raw_fr_diff', 0)/100):+.4f}%"
             self._emit_event(
                 "state_change",
                 (
-                    f"🎯 *TARGET LOCKED*\n"
-                    f"Pair: *{best['symbol']}*\n"
-                    f"Direction: `{best['direction']}`\n\n"
-                    f"📊 *Stats:*\n"
-                    f"├ Diff FR: `{best['delta_pct']:.4f}%` (Raw: `{(best.get('raw_fr_diff', 0)/100):+.4f}%`)\n"
-                    f"├ Price Spread: `{price_spread:+.4f}%`\n"
-                    f"└ Interval: `BB {bb_iv}h / KC {kc_iv}h`\n\n"
-                    f"💰 *Position:*\n"
-                    f"└ `${AUTO_BALANCE_PER_LEG:.0f}` × `{AUTO_LEVERAGE}x` = `${AUTO_BALANCE_PER_LEG * AUTO_LEVERAGE:.0f}` per leg\n\n"
-                    f"⏰ Funding in: `{funding_in}` (WIB)\n"
-                    f"⚡ _Evaluating market condition..._"
+                    f"🎯 {b('TARGET LOCKED')}\n"
+                    f"Pair: {b(best['symbol'])}\n"
+                    f"Direction: {code(best['direction'])}\n\n"
+                    f"📊 {b('Stats:')}\n"
+                    f"├ Diff FR: {code(delta_str)} (Raw: {code(raw_diff_str)})\n"
+                    f"├ Price Spread: {code(f'{price_spread:+.4f}%')}\n"
+                    f"└ Interval: {code(f'BB {bb_iv}h / KC {kc_iv}h')}\n\n"
+                    f"💰 {b('Position:')}\n"
+                    f"└ {code(f'${AUTO_BALANCE_PER_LEG:.0f}')} × {code(f'{AUTO_LEVERAGE}x')} = {code(f'${AUTO_BALANCE_PER_LEG * AUTO_LEVERAGE:.0f}')} per leg\n\n"
+                    f"⏰ Funding in: {code(funding_in)} (WIB)\n"
+                    f"⚡ {i('Evaluating market condition...')}"
                 ),
             )
 
@@ -520,7 +528,7 @@ class AutomationEngine:
             # Window expired → cancel, kembali LOOKING
             if time_left <= 0:
                 log.info("DELAY → LOOKING: funding window expired for %s", order.symbol)
-                self._emit_event("cancel", f"⏰ Window habis untuk *{order.symbol}* — kembali scan...")
+                self._emit_event("cancel", f"⏰ Window habis untuk {b(order.symbol)} — kembali scan...")
                 self._delay_orders.remove(order)
                 cancelled_any = True
                 continue
@@ -553,11 +561,11 @@ class AutomationEngine:
                          order.symbol, curr_delta, AUTO_DELAY_CANCEL_FUNDING_DIFF)
                 self._emit_event(
                     "cancel",
-                    f"🚫 *ENTRY CANCELLED* | {order.symbol}\n\n"
-                    f"⚠️ *Reason:* Diff FR anjlok\n"
-                    f"├ Diff FR: `{entry_delta:.4f}%` ➡️ `{curr_delta:.4f}%` (batas: `{AUTO_DELAY_CANCEL_FUNDING_DIFF}%`)\n"
-                    f"└ Price Spread: `{price_spread_now:+.4f}%`\n\n"
-                    f"🔄 _Scanning pair lain..._"
+                    f"🚫 {b('ENTRY CANCELLED')} | {esc(order.symbol)}\n\n"
+                    f"⚠️ {b('Reason:')} Diff FR anjlok\n"
+                    f"├ Diff FR: {code(f'{entry_delta:.4f}%')} ➡️ {code(f'{curr_delta:.4f}%')} (batas: {code(f'{AUTO_DELAY_CANCEL_FUNDING_DIFF}%')})\n"
+                    f"└ Price Spread: {code(f'{price_spread_now:+.4f}%')}\n\n"
+                    f"🔄 {i('Scanning pair lain...')}"
                 )
                 self._delay_orders.remove(order)
                 if order.symbol in self._delay_notified:
@@ -585,11 +593,11 @@ class AutomationEngine:
                     secs_left = int(time_left % 60)
                     self._emit_event(
                         "state_change",
-                        f"⏳ *Monitoring SPREAD(DELAY)* | {order.symbol}\n\n"
-                        f"├ Price Spread: `{price_spread_now:+.4f}%` (target: `<= {AUTO_DELAY_ENTRY_PRICE_SPREAD:.2f}%`)\n"
-                        f"├ Diff FR: `{curr_delta:.4f}%`\n"
-                        f"└ Funding dalam: `{mins_left}m {secs_left}s`\n\n"
-                        f"⚡ _Scanning spread setiap {AUTO_MONITOR_INTERVAL}s..._"
+                        f"⏳ {b('Monitoring SPREAD(DELAY)')} | {esc(order.symbol)}\n\n"
+                        f"├ Price Spread: {code(f'{price_spread_now:+.4f}%')} (target: {code(f'<= {AUTO_DELAY_ENTRY_PRICE_SPREAD:.2f}%')})\n"
+                        f"├ Diff FR: {code(f'{curr_delta:.4f}%')}\n"
+                        f"└ Funding dalam: {code(f'{mins_left}m {secs_left}s')}\n\n"
+                        f"⚡ {i(f'Scanning spread setiap {AUTO_MONITOR_INTERVAL}s...')}"
                     )
 
         # Jika ada yang cancel dan masih dalam window, kembali ke LOOKING untuk cari pair baru
@@ -641,22 +649,26 @@ class AutomationEngine:
             mins_left = time_left / 60
             self._state = State.LIVE
             log.info("DELAY → LIVE: %s executed, monitoring reversal", order.symbol)
+            pos_size_val = pos.get('position_size', order.amount_usd * order.leverage)
+            bb_rate_s = f"{current.get('bybit_rate_pct', 0):.4f}%"
+            kc_rate_s = f"{current.get('kucoin_rate_pct', 0):.4f}%"
+            diff_fr_s = f"{current.get('delta_pct', 0):.4f}%"
             self._emit_event(
                 "entry",
                 (
-                    f"✅ *AUTO ENTRY*\n"
-                    f"Pair: *{order.symbol}*\n"
-                    f"Margin: `${order.amount_usd:.0f}` × `{order.leverage}x` = `${pos.get('position_size', order.amount_usd * order.leverage):.0f}`\n"
-                    f"Price spread: `{order.entry_price_spread:+.4f}%` ((Long-Short)/Short)\n"
-                    f"Funding: Bybit `{current.get('bybit_rate_pct', 0):.4f}%` / KuCoin `{current.get('kucoin_rate_pct', 0):.4f}%`  |  Diff FR: `{current.get('delta_pct', 0):.4f}%`\n"
-                    f"Direction: `{current.get('direction', '—')}`\n"
-                    f"⏰ Funding in: `{mins_left:.0f} menit` (WIB)\n"
-                    f"⚡ _Monitoring market every {AUTO_MONITOR_INTERVAL}s…_"
+                    f"✅ {b('AUTO ENTRY')}\n"
+                    f"Pair: {b(order.symbol)}\n"
+                    f"Margin: {code(f'${order.amount_usd:.0f}')} × {code(f'{order.leverage}x')} = {code(f'${pos_size_val:.0f}')}\n"
+                    f"Price spread: {code(f'{order.entry_price_spread:+.4f}%')} ((Long-Short)/Short)\n"
+                    f"Funding: Bybit {code(bb_rate_s)} / KuCoin {code(kc_rate_s)}  |  Diff FR: {code(diff_fr_s)}\n"
+                    f"Direction: {code(current.get('direction', '—'))}\n"
+                    f"⏰ Funding in: {code(f'{mins_left:.0f} menit')} (WIB)\n"
+                    f"⚡ {i(f'Monitoring market every {AUTO_MONITOR_INTERVAL}s…')}"
                 ),
             )
         else:
             errors = "\n".join(result.get("errors", ["unknown"]))
-            self._emit_event("error", f"❌ Auto execution failed: {errors}")
+            self._emit_event("error", f"❌ Auto execution failed: {esc(errors)}")
             self._live_order = None
             self._state = State.LOOKING
 
@@ -725,9 +737,9 @@ class AutomationEngine:
                     log.warning("HEDGE EMERGENCY: %s — %s", pos["symbol"], reason)
                     self._emit_event(
                         "state_change",
-                        f"🚨 *HEDGE EMERGENCY* | {pos['symbol']}\n\n"
-                        f"{reason}\n\n"
-                        f"⚡ _Emergency close — menutup leg satunya..._"
+                        f"🚨 {b('HEDGE EMERGENCY')} | {esc(pos['symbol'])}\n\n"
+                        f"{esc(reason)}\n\n"
+                        f"⚡ {i('Emergency close — menutup leg satunya...')}"
                     )
                     # Close the full position (remaining leg gets closed too)
                     if PAPER_MODE:
@@ -736,14 +748,15 @@ class AutomationEngine:
                         close_engine = self._live_engine or self._paper
                     result = close_engine.close_position(pos_id)
                     if result.get("ok"):
+                        rpnl_s = f"{result.get('realized_pnl', 0):+.2f} USD"
                         self._emit_event(
                             "close",
-                            f"🚨 *EMERGENCY CLOSE* | {pos['symbol']}\n\n"
+                            f"🚨 {b('EMERGENCY CLOSE')} | {esc(pos['symbol'])}\n\n"
                             f"Posisi ditutup darurat karena ada satu leg yang hilang.\n"
-                            f"Realized PnL: `{result.get('realized_pnl', 0):+.2f} USD`"
+                            f"Realized PnL: {code(rpnl_s)}"
                         )
                     else:
-                        self._emit_event("error", f"❌ Emergency close failed: {result.get('error', 'unknown')}")
+                        self._emit_event("error", f"❌ Emergency close failed: {esc(result.get('error', 'unknown'))}")
                     self._live_position_id = None
                     self._live_order = None
                     self._funding_threshold_met = False
@@ -759,23 +772,24 @@ class AutomationEngine:
             self._delisting_alerted.add(symbol)
             self._emit_event(
                 "state_change",
-                f"🚨 *DELISTING TERDETEKSI* | {symbol}\n\n"
+                f"🚨 {b('DELISTING TERDETEKSI')} | {esc(symbol)}\n\n"
                 f"Simbol ini baru terdeteksi dari pengumuman delisting exchange.\n"
                 f"Posisi masih terbuka — segera evaluasi penutupan manual.\n\n"
-                f"_Gunakan /close {pos_id[:8]} untuk menutup, atau /blacklist info {symbol} untuk detail._"
+                f"{i(f'Gunakan /close {pos_id[:8]} untuk menutup, atau /blacklist info {symbol} untuk detail.')}"
             )
             if AUTO_CLOSE_ON_DELISTING_DETECTED:
                 log.warning("DELISTING: auto-closing %s (AUTO_CLOSE_ON_DELISTING_DETECTED=true)", symbol)
                 close_engine = self._paper if PAPER_MODE else (self._live_engine or self._paper)
                 result = close_engine.close_position(pos_id)
                 if result.get("ok"):
+                    rpnl_s = f"{result.get('realized_pnl', 0):+.2f} USD"
                     self._emit_event(
                         "close",
-                        f"🚨 *AUTO-CLOSE DELISTING* | {symbol}\n\n"
-                        f"Realized PnL: `{result.get('realized_pnl', 0):+.2f} USD`"
+                        f"🚨 {b('AUTO-CLOSE DELISTING')} | {esc(symbol)}\n\n"
+                        f"Realized PnL: {code(rpnl_s)}"
                     )
                 else:
-                    self._emit_event("error", f"❌ Auto-close delisting gagal: {result.get('error', 'unknown')}")
+                    self._emit_event("error", f"❌ Auto-close delisting gagal: {esc(result.get('error', 'unknown'))}")
                 self._live_position_id = None
                 self._live_order = None
                 self._funding_threshold_met = False
@@ -974,9 +988,9 @@ class AutomationEngine:
             trigger_reason = None
             if threshold_met or flip_met:
                 if threshold_met and flip_met:
-                    trigger_reason = f"Diff FR turun ke `{current_delta:.4f}%` dan arah FR flip"
+                    trigger_reason = f"Diff FR turun ke {code(f'{current_delta:.4f}%')} dan arah FR flip"
                 elif threshold_met:
-                    trigger_reason = f"Diff FR turun ke `{current_delta:.4f}%` (≤ `{AUTO_LIVE_CLOSE_FUNDING_DIFF}%`)"
+                    trigger_reason = f"Diff FR turun ke {code(f'{current_delta:.4f}%')} (≤ {code(f'{AUTO_LIVE_CLOSE_FUNDING_DIFF}%')})"
                 elif flip_met:
                     trigger_reason = "Arah FR flip"
 
@@ -985,8 +999,8 @@ class AutomationEngine:
                 log.info("LIVE SAME Tahap 1: %s — %s", symbol, trigger_reason)
                 self._emit_event(
                     "state_change",
-                    f"📉 *Tahap 1 Terpenuhi* | {symbol}\n\n{trigger_reason}\n\n"
-                    f"🔍 _Sekarang monitoring Price Spread untuk exit..._"
+                    f"📉 {b('Tahap 1 Terpenuhi')} | {esc(symbol)}\n\n{trigger_reason}\n\n"
+                    f"🔍 {i('Sekarang monitoring Price Spread untuk exit...')}"
                 )
                 return
             else:
@@ -1033,29 +1047,30 @@ class AutomationEngine:
         bb_pct = round(st.ratio_bybit * 100, 1)
         kc_pct = round(st.ratio_kucoin * 100, 1)
 
+        fee_sim = f"${st.amount_to_transfer * REBALANCE_THRESHOLD * 0.01:.2f}"
         if PAPER_MODE:
             msg = (
-                f"⚖️ *AUTO REBALANCE — PAPER MODE*\n\n"
+                f"⚖️ {b('AUTO REBALANCE — PAPER MODE')}\n\n"
                 f"Saldo tidak seimbang. Memulai simulasi transfer...\n\n"
-                f"├ Bybit:  `${st.bybit_balance:.2f}` ({bb_pct}%)\n"
-                f"├ KuCoin: `${st.kucoin_balance:.2f}` ({kc_pct}%)\n"
-                f"└ Total:  `${st.total:.2f}`\n\n"
-                f"Transfer: `${st.amount_to_transfer:.2f}` dari *{st.from_exchange}* → *{st.to_exchange}*\n"
-                f"Fee simulasi: `${st.amount_to_transfer * REBALANCE_THRESHOLD * 0.01:.2f}` (0.1%)\n"
+                f"├ Bybit:  {code(f'${st.bybit_balance:.2f}')} ({bb_pct}%)\n"
+                f"├ KuCoin: {code(f'${st.kucoin_balance:.2f}')} ({kc_pct}%)\n"
+                f"└ Total:  {code(f'${st.total:.2f}')}\n\n"
+                f"Transfer: {code(f'${st.amount_to_transfer:.2f}')} dari {b(st.from_exchange)} → {b(st.to_exchange)}\n"
+                f"Fee simulasi: {code(fee_sim)} (0.1%)\n"
                 f"Estimasi selesai: ~5 detik\n\n"
-                f"⏸ _Bot menahan trading hingga saldo seimbang..._"
+                f"⏸ {i('Bot menahan trading hingga saldo seimbang...')}"
             )
         else:
             msg = (
-                f"⚖️ *SALDO TIDAK SEIMBANG — AKSI DIPERLUKAN*\n\n"
-                f"├ Bybit:  `${st.bybit_balance:.2f}` ({bb_pct}%)\n"
-                f"├ KuCoin: `${st.kucoin_balance:.2f}` ({kc_pct}%)\n"
-                f"└ Total:  `${st.total:.2f}`\n\n"
-                f"📋 *Transfer Manual Diperlukan:*\n"
-                f"Transfer `${st.amount_to_transfer:.2f}` USDT dari *{st.from_exchange}* ke *{st.to_exchange}*\n\n"
-                f"⏸ _Bot TIDAK AKAN trading hingga saldo seimbang._\n"
-                f"_Cek saldo otomatis tiap {REBALANCE_CHECK_INTERVAL_SEC} detik._\n\n"
-                f"_Gunakan /rebalance untuk cek status terkini._"
+                f"⚖️ {b('SALDO TIDAK SEIMBANG — AKSI DIPERLUKAN')}\n\n"
+                f"├ Bybit:  {code(f'${st.bybit_balance:.2f}')} ({bb_pct}%)\n"
+                f"├ KuCoin: {code(f'${st.kucoin_balance:.2f}')} ({kc_pct}%)\n"
+                f"└ Total:  {code(f'${st.total:.2f}')}\n\n"
+                f"📋 {b('Transfer Manual Diperlukan:')}\n"
+                f"Transfer {code(f'${st.amount_to_transfer:.2f}')} USDT dari {b(st.from_exchange)} ke {b(st.to_exchange)}\n\n"
+                f"⏸ {i('Bot TIDAK AKAN trading hingga saldo seimbang.')}\n"
+                f"{i(f'Cek saldo otomatis tiap {REBALANCE_CHECK_INTERVAL_SEC} detik.')}\n\n"
+                f"{i('Gunakan /rebalance untuk cek status terkini.')}"
             )
 
         self._emit_event("rebalance_start", msg)
@@ -1081,19 +1096,19 @@ class AutomationEngine:
 
             if PAPER_MODE:
                 msg = (
-                    f"✅ *REBALANCE SELESAI — PAPER MODE*\n\n"
-                    f"├ Bybit:  `${st.bybit_balance:.2f}` ({bb_pct}%)\n"
-                    f"├ KuCoin: `${st.kucoin_balance:.2f}` ({kc_pct}%)\n"
-                    f"└ Total:  `${st.total:.2f}`\n\n"
-                    f"🟢 _Bot kembali aktif mencari peluang..._"
+                    f"✅ {b('REBALANCE SELESAI — PAPER MODE')}\n\n"
+                    f"├ Bybit:  {code(f'${st.bybit_balance:.2f}')} ({bb_pct}%)\n"
+                    f"├ KuCoin: {code(f'${st.kucoin_balance:.2f}')} ({kc_pct}%)\n"
+                    f"└ Total:  {code(f'${st.total:.2f}')}\n\n"
+                    f"🟢 {i('Bot kembali aktif mencari peluang...')}"
                 )
             else:
                 msg = (
-                    f"✅ *SALDO SEIMBANG — TRADING DILANJUTKAN*\n\n"
-                    f"├ Bybit:  `${st.bybit_balance:.2f}` ({bb_pct}%)\n"
-                    f"├ KuCoin: `${st.kucoin_balance:.2f}` ({kc_pct}%)\n"
-                    f"└ Total:  `${st.total:.2f}`\n\n"
-                    f"🟢 _Bot kembali aktif mencari peluang..._"
+                    f"✅ {b('SALDO SEIMBANG — TRADING DILANJUTKAN')}\n\n"
+                    f"├ Bybit:  {code(f'${st.bybit_balance:.2f}')} ({bb_pct}%)\n"
+                    f"├ KuCoin: {code(f'${st.kucoin_balance:.2f}')} ({kc_pct}%)\n"
+                    f"└ Total:  {code(f'${st.total:.2f}')}\n\n"
+                    f"🟢 {i('Bot kembali aktif mencari peluang...')}"
                 )
 
             self._emit_event("rebalance_done", msg)
@@ -1101,7 +1116,7 @@ class AutomationEngine:
                      st.bybit_balance, st.kucoin_balance)
             self._state = State.IDLE
         elif result == "failed":
-            self._emit_event("rebalance_failed", "🔴 *REBALANCE GAGAL* — kembali IDLE")
+            self._emit_event("rebalance_failed", f"🔴 {b('REBALANCE GAGAL')} — kembali IDLE")
             self._state = State.IDLE
         # result == "waiting" → stay REBALANCING, do nothing
 

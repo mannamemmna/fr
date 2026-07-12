@@ -5,6 +5,7 @@ from __future__ import annotations
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from core.tg_format import b, i, code, esc
 import handlers.state as state
 
 
@@ -19,21 +20,23 @@ async def cmd_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         extra = ""
         if s.get("delay"):
             d = s["delay"]
+            amount_s = f"${d['amount']:.0f}"
+            delta_s = f"{d.get('delta', 0):.4f}%"
             extra = (
-                f"\n\n⏳ *Menunggu entry...*\n"
-                f"Pair: *{d['symbol']}* | {d['side_bb'].upper()} Bybit / {d['side_kc'].upper()} KuCoin\n"
-                f"Modal: `${d['amount']:.0f}` × {d['leverage']}x\n"
-                f"Diff FR: `{d.get('delta', 0):.4f}%`"
+                f"\n\n⏳ {b('Menunggu entry...')}\n"
+                f"Pair: {b(d['symbol'])} | {esc(d['side_bb'].upper())} Bybit / {esc(d['side_kc'].upper())} KuCoin\n"
+                f"Modal: {code(amount_s)} × {d['leverage']}x\n"
+                f"Diff FR: {code(delta_s)}"
             )
         if s.get("live_position"):
-            extra += f"\n\n📈 Posisi aktif: `{s['live_position'][:8]}...`"
+            extra += f"\n\n📈 Posisi aktif: {code(s['live_position'][:8] + '...')}"
 
         await update.message.reply_text(
-            f"*🤖 AUTO ENGINE*\n\n"
+            f"{b('🤖 AUTO ENGINE')}\n\n"
             f"Status: {st}\n"
-            f"State: `{s['state']}` — {s['state_desc']}{extra}\n\n"
-            f"_/auto on | /auto off_",
-            parse_mode="Markdown",
+            f"State: {code(s['state'])} — {esc(s['state_desc'])}{extra}\n\n"
+            f"{i('/auto on | /auto off')}",
+            parse_mode="HTML",
         )
         return
 
@@ -45,14 +48,14 @@ async def cmd_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state.auto_engine.enable()
         state.auto_engine.set_notify_chat(chat_id)
         await update.message.reply_text(
-            f"🟢 *Auto mode ON*\n"
-            f"Bot akan scan & eksekusi otomatis setiap funding cycle.\n\n"
-            f"_Tip: set NOTIFY\\_CHAT\\_ID di .env supaya notifikasi langsung jalan tanpa /auto on_",
-            parse_mode="Markdown",
+            f"🟢 {b('Auto mode ON')}\n"
+            f"Bot akan scan &amp; eksekusi otomatis setiap funding cycle.\n\n"
+            f"{i('Tip: set NOTIFY_CHAT_ID di .env supaya notifikasi langsung jalan tanpa /auto on')}",
+            parse_mode="HTML",
         )
     elif cmd == "off":
         state.auto_engine.disable()
-        await update.message.reply_text("🔴 *Auto mode OFF* — tidak ada order baru.", parse_mode="Markdown")
+        await update.message.reply_text(f"🔴 {b('Auto mode OFF')} — tidak ada order baru.", parse_mode="HTML")
     elif cmd == "status":
         # Redirect ke tampilan status (panggil ulang tanpa args)
         context.args = []

@@ -29,7 +29,7 @@ def _send_alert(message: str):
     try:
         resp = _r.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={"chat_id": chat_id, "text": message},
+            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
             timeout=5,
         )
         if not resp.ok:
@@ -54,6 +54,7 @@ def start_bg_scanner():
 
 
 def _bg_scanner_loop():
+    from core.tg_format import b, esc
     log.info("Background scanner started (interval=%ds)", AUTO_SCAN_INTERVAL)
     while not _bg_scanner_stop.is_set():
         try:
@@ -78,7 +79,7 @@ def _bg_scanner_loop():
                 now_up = payload.get(count_key, 0) > 0
                 if was_down and now_up:
                     state.exchange_health[name] = True
-                    _send_alert(f"🟢 {name.upper()} kembali online!")
+                    _send_alert(f"🟢 {b(name.upper())} kembali online!")
 
         except Exception as e:
             err_msg = str(e)[:200]
@@ -88,8 +89,8 @@ def _bg_scanner_loop():
                 if name.lower() in err_msg.lower() or "timeout" in err_msg.lower() or "connect" in err_msg.lower():
                     if state.exchange_health.get(name, True):
                         state.exchange_health[name] = False
-                        _send_alert(f"🔴 {name.upper()} DOWN\n{err_msg}")
+                        _send_alert(f"🔴 {b(name.upper())} DOWN\n{esc(err_msg)}")
 
-            _send_alert(f"⚠️ Auto-scan error\n{err_msg}")
+            _send_alert(f"⚠️ Auto-scan error\n{esc(err_msg)}")
 
         _bg_scanner_stop.wait(AUTO_SCAN_INTERVAL)

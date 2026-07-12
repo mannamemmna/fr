@@ -26,7 +26,7 @@ def _send(text: str):
     try:
         resp = _r.post(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            json={"chat_id": NOTIFY_CHAT_ID, "text": text},
+            json={"chat_id": NOTIFY_CHAT_ID, "text": text, "parse_mode": "HTML"},
             timeout=8,
         )
         if not resp.ok:
@@ -41,6 +41,8 @@ async def _job_daily_summary(context):
         return
 
     try:
+        from core.tg_format import b, code
+
         summary = state.paper_engine.get_summary()
         closed = state.paper_engine.get_closed_positions()
 
@@ -61,16 +63,25 @@ async def _job_daily_summary(context):
         pnl_emoji = "🟢" if summary["total_pnl"] >= 0 else "🔴"
         day_emoji = "🟢" if pnl_1d >= 0 else "🔴"
 
+        date_str = now.strftime("%d %b %Y")
+        title = f"RINGKASAN HARIAN — {date_str}"
+        day_pnl_s = f"{pnl_1d:+.2f} USD"
+        total_pnl_s = f"{summary['total_pnl']:+.2f} USD"
+        real_s = f"{summary['realized_pnl']:+.2f}"
+        unreal_s = f"{summary['unrealized_pnl']:+.2f}"
+        bal_s = f"${summary['balance']:.2f}"
+        fees_s = f"{summary['total_fees']:.2f} USD"
+
         msg = (
-            f"📊 RINGKASAN HARIAN — {now.strftime('%d %b %Y')}\n"
-            f"Mode: {mode}\n\n"
-            f"{day_emoji} PnL 24 jam: {pnl_1d:+.2f} USD\n"
-            f"{pnl_emoji} Total PnL: {summary['total_pnl']:+.2f} USD\n"
-            f"   Direalisasi: {summary['realized_pnl']:+.2f}\n"
-            f"   Belum: {summary['unrealized_pnl']:+.2f}\n\n"
-            f"Saldo: ${summary['balance']:.2f}\n"
-            f"Posisi terbuka: {summary['open_positions']}\n"
-            f"Total biaya: {summary['total_fees']:.2f} USD"
+            f"📊 {b(title)}\n"
+            f"Mode: {code(mode)}\n\n"
+            f"{day_emoji} PnL 24 jam: {code(day_pnl_s)}\n"
+            f"{pnl_emoji} Total PnL: {code(total_pnl_s)}\n"
+            f"   Direalisasi: {code(real_s)}\n"
+            f"   Belum: {code(unreal_s)}\n\n"
+            f"Saldo: {code(bal_s)}\n"
+            f"Posisi terbuka: {code(summary['open_positions'])}\n"
+            f"Total biaya: {code(fees_s)}"
         )
         _send(msg)
         log.info("Daily summary sent")
@@ -80,12 +91,13 @@ async def _job_daily_summary(context):
 
 async def _job_hourly_check(context):
     """Check exchange health and alert if down."""
+    from core.tg_format import b
     alerts = []
     for name in ("bybit", "kucoin"):
         if not state.exchange_health.get(name, True):
-            alerts.append(f"🔴 {name.upper()} masih DOWN")
+            alerts.append(f"🔴 {b(name.upper())} masih DOWN")
     if alerts:
-        _send("⚠️ Exchange Health Alert\n" + "\n".join(alerts))
+        _send(f"⚠️ {b('Exchange Health Alert')}\n" + "\n".join(alerts))
 
 
 def register_jobs(app: Application):
@@ -114,10 +126,12 @@ def register_jobs(app: Application):
         name="hourly_health",
     )
 
+    from core.tg_format import b
     log.info("Scheduled jobs registered: daily_summary + hourly_health")
+    mode_s = "Paper (Simulasi)" if PAPER_MODE else "Live (Real)"
     _send(
-        f"🤖 FR Bot online!\n"
-        f"Mode: {'Paper (Simulasi)' if PAPER_MODE else 'Live (Real)'}\n"
+        f"🤖 {b('FR Bot online!')}\n"
+        f"Mode: {mode_s}\n"
         f"Notifikasi aktif. Daily summary jam 00:00 UTC.\n"
         f"Ketik /help untuk daftar perintah."
     )

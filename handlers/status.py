@@ -1,4 +1,4 @@
-""""/status — Real-time status dashboard.""" 
+"""/status — Real-time status dashboard.""" 
 
 from __future__ import annotations
 import time
@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 
 from config import PAPER_MODE, AUTO_SCAN_INTERVAL, AUTO_MONITOR_INTERVAL, AUTO_ENTRY_WINDOW_MIN, REBALANCE_THRESHOLD
 from core.scanner import read_opportunities
+from core.tg_format import b, i, code, esc
 import handlers.state as state
 
 
@@ -42,15 +43,16 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         eng_state = eng.get("state_desc", "—")
         if eng.get("delay"):
             d = eng["delay"]
+            delta_str = f"{d.get('delta', 0):.4f}%"
             eng_detail = (
-                f"🔸 Pair: *{d['symbol']}*  |  {d['side_bb'].upper()}/{d['side_kc'].upper()}\n"
-                f"🔸 Diff FR: `{d.get('delta', 0):.4f}%`\n"
+                f"🔸 Pair: {b(d['symbol'])}  |  {esc(d['side_bb'].upper())}/{esc(d['side_kc'].upper())}\n"
+                f"🔸 Diff FR: {code(delta_str)}\n"
                 f"🔸 Modal: ${d['amount']:.0f} × {d['leverage']}x"
             )
         elif eng.get("live_position"):
-            eng_detail = f"🔸 Posisi: `{eng['live_position'][:8]}...`"
+            eng_detail = f"🔸 Posisi: {code(eng['live_position'][:8] + '...')}"
         else:
-            eng_detail = f"🔸 State: {eng_state}"
+            eng_detail = f"🔸 State: {esc(eng_state)}"
     else:
         eng_enabled = False
         eng_detail = "🔸 Belum diinisialisasi"
@@ -80,24 +82,24 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bb_cfg = state.paper_engine.get_bybit_balance()
         kc_cfg = state.paper_engine.get_kucoin_balance()
         rebalance_line = (
-            f"⚖️ Balance: Bybit `${bb_cfg:.2f}` ({rb['ratio_bybit']:.0f}%)"
-            f" | KuCoin `${kc_cfg:.2f}` ({rb['ratio_kucoin']:.0f}%)"
+            f"⚖️ Balance: Bybit {code(f'${bb_cfg:.2f}')} ({rb['ratio_bybit']:.0f}%)"
+            f" | KuCoin {code(f'${kc_cfg:.2f}')} ({rb['ratio_kucoin']:.0f}%)"
             f" — {'🟢 Seimbang' if rb['is_balanced'] else '🔴 Tidak Seimbang'}"
         )
 
     lines = [
-        "*🤖 FR Bot Status*",
+        b("🤖 FR Bot Status"),
         "",
-        f"🔹 Mode: `{mode}`",
-        f"🔹 Saldo: `{balance}`",
-        f"🔹 Total PnL: `{total_pnl}`",
-        f"🔹 Direalisasi: `{realized}`",
+        f"🔹 Mode: {code(mode)}",
+        f"🔹 Saldo: {code(balance)}",
+        f"🔹 Total PnL: {code(total_pnl)}",
+        f"🔹 Direalisasi: {code(realized)}",
         "",
-        "*🔗 Koneksi Exchange*",
+        b("🔗 Koneksi Exchange"),
         f"🔹 {bb_icon} Bybit — {kc_icon} KuCoin",
         f"🔹 Scan setiap: {AUTO_SCAN_INTERVAL}s",
         "",
-        "*⚙️ Auto Engine*",
+        b("⚙️ Auto Engine"),
         f"🔹 Status: {'✅ Aktif' if eng_enabled else '❌ Nonaktif'}",
         eng_detail,
         f"🔹 Window entry: {AUTO_ENTRY_WINDOW_MIN} menit sebelum funding",
@@ -106,18 +108,20 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
 
     if open_positions:
-        lines.append(f"*📊 Posisi Terbuka ({len(open_positions)})*")
+        lines.append(b(f"📊 Posisi Terbuka ({len(open_positions)})"))
         for p in open_positions:
             pid = p["id"][:8]
-            sym = p["symbol"]
-            side_bb = p.get("side_bybit", "?").upper()
-            side_kc = p.get("side_kucoin", "?").upper()
+            sym = esc(p["symbol"])
+            side_bb = esc(p.get("side_bybit", "?").upper())
+            side_kc = esc(p.get("side_kucoin", "?").upper())
             margin = p.get("amount_usd", 0)
             lev = p.get("leverage", "?")
             size = margin * lev if isinstance(lev, int) else margin
-            lines.append(f"  `{pid}` {sym} — ${margin:.0f}×{lev}x=${size:.0f} | {side_bb}/{side_kc}")
+            lines.append(f"  {code(pid)} {sym} — ${margin:.0f}×{lev}x=${size:.0f} | {side_bb}/{side_kc}")
 
     if next_funding != "—":
-        lines += ["", f"*⏰ Funding Berikutnya*", f"  {next_funding} — pair teratas: *{top_sym}*"]
+        lines += ["", b("⏰ Funding Berikutnya"), f"  {next_funding} — pair teratas: {b(top_sym)}"]
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    lines += ["", i("Istilah belum familiar? Ketik /help untuk penjelasan.")]
+
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")

@@ -109,11 +109,12 @@ def main():
 
     # 🛡️ Restart check
     if PAPER_MODE and state.paper_engine:
+        from core.tg_format import b, code, i, esc
         open_positions = state.paper_engine.get_open_positions()
         if open_positions:
             n = len(open_positions)
             pos_list = "\n".join(
-                f"  • *{p['symbol']}* — ${p['amount_usd']:.0f} × {p.get('leverage','?')}x — `{p['id'][:8]}…`"
+                f"  • {b(p['symbol'])} — ${p['amount_usd']:.0f} × {p.get('leverage','?')}x — {code(p['id'][:8] + '…')}"
                 for p in open_positions
             )
             if AUTO_CLOSE_ON_RESTART:
@@ -121,26 +122,26 @@ def main():
                 total_pnl = sum(r.get("realized_pnl", 0) for r in results)
                 log.warning("Auto-closed %d orphaned positions on restart (PnL: %+.2f)", n, total_pnl)
                 startup_warn = (
-                    f"⚠️ *BOT RESTART — AUTO-CLOSED {n} ORPHANED POSITIONS*\n\n"
+                    f"⚠️ {b(f'BOT RESTART — AUTO-CLOSED {n} ORPHANED POSITIONS')}\n\n"
                     f"{pos_list}\n\n"
-                    f"Total PnL: *{total_pnl:+.2f} USD*\n"
-                    f"Balance: `${state.paper_engine.get_balance():.2f}`\n\n"
-                    f"_Set AUTO_CLOSE_ON_RESTART=false in .env to disable._"
+                    f"Total PnL: {b(f'{total_pnl:+.2f} USD')}\n"
+                    f"Balance: {code(f'${state.paper_engine.get_balance():.2f}')}\n\n"
+                    f"{i('Set AUTO_CLOSE_ON_RESTART=false in .env to disable.')}"
                 )
             else:
                 log.warning("Found %d orphaned positions on restart (NOT auto-closing)", n)
                 startup_warn = (
-                    f"⚠️ *BOT RESTART — {n} ORPHANED POSITIONS FOUND*\n\n"
+                    f"⚠️ {b(f'BOT RESTART — {n} ORPHANED POSITIONS FOUND')}\n\n"
                     f"{pos_list}\n\n"
-                    f"_Close manual: /closeall_\n"
-                    f"_Balance: `${state.paper_engine.get_balance():.2f}`_"
+                    f"{i('Close manual: /closeall')}\n"
+                    f"{i(f'Balance: ${state.paper_engine.get_balance():.2f}')}"
                 )
             if NOTIFY_CHAT_ID:
                 try:
                     import requests
                     requests.post(
                         f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                        json={"chat_id": NOTIFY_CHAT_ID, "text": startup_warn, "parse_mode": "Markdown"},
+                        json={"chat_id": NOTIFY_CHAT_ID, "text": startup_warn, "parse_mode": "HTML"},
                         timeout=5,
                     )
                 except Exception as _e:
@@ -150,15 +151,16 @@ def main():
     def _on_auto_event(event: AutoEvent, notify_chat_id: str | None = None):
         if not notify_chat_id:
             return
-        import re
         import requests
+        from core.tg_format import b
         raw = event.message if event.message else ""
-        plain = re.sub(r"[*`_\[\]]", "", raw)
-        msg = f"🤖 Auto | {event.type}\n{plain}"
+        # NOTE: event.message is now built with HTML tags directly by
+        # automation_engine.py — do NOT strip anything here anymore.
+        msg = f"🤖 {b('Auto | ' + event.type)}\n{raw}"
         try:
             requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": notify_chat_id, "text": msg},
+                json={"chat_id": notify_chat_id, "text": msg, "parse_mode": "HTML"},
                 timeout=5,
             )
         except Exception:
@@ -187,18 +189,19 @@ def main():
         if not NOTIFY_CHAT_ID:
             return
         import requests
+        from core.tg_format import b, esc
         icon = "🔴" if confidence == "high" else "🟡"
         msg = (
-            f"{icon} DELISTING TERDETEKSI\n\n"
-            f"Symbol: {symbol} ({exchange}, confidence={confidence})\n"
-            f"{title}\n\n"
-            f"Entry baru untuk {symbol} sekarang diblokir.\n"
-            f"{url}"
+            f"{icon} {b('DELISTING TERDETEKSI')}\n\n"
+            f"Symbol: {b(symbol)} ({esc(exchange)}, confidence={esc(confidence)})\n"
+            f"{esc(title)}\n\n"
+            f"Entry baru untuk {b(symbol)} sekarang diblokir.\n"
+            f"{esc(url)}"
         )
         try:
             requests.post(
                 f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-                json={"chat_id": NOTIFY_CHAT_ID, "text": msg},
+                json={"chat_id": NOTIFY_CHAT_ID, "text": msg, "parse_mode": "HTML"},
                 timeout=5,
             )
         except Exception:

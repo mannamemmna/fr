@@ -19,6 +19,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from core.scanner import read_opportunities
+from core.tg_format import b, i, code, esc
 
 
 def _fmt_wib_from_ts(ts_sec: int | None) -> str:
@@ -49,9 +50,9 @@ def _fmt_countdown(ts_sec: int | None) -> str:
 async def cmd_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text(
-            "📋 *Usage:* `/pair <symbol>`\n\n"
-            "Contoh: `/pair WAXP` atau `/pair BTC`",
-            parse_mode="Markdown",
+            f"📋 {b('Usage:')} <code>/pair &lt;symbol&gt;</code>\n\n"
+            f"Contoh: <code>/pair WAXP</code> atau <code>/pair BTC</code>",
+            parse_mode="HTML",
         )
         return
 
@@ -71,9 +72,9 @@ async def cmd_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not match:
         await update.message.reply_text(
-            f"❌ Pair `{raw_symbol}` tidak ditemukan di scan terakhir.\n"
-            f"Gunakan `/scan` dulu untuk refresh data.",
-            parse_mode="Markdown",
+            f"❌ Pair {code(raw_symbol)} tidak ditemukan di scan terakhir.\n"
+            f"Gunakan <code>/scan</code> dulu untuk refresh data.",
+            parse_mode="HTML",
         )
         return
 
@@ -110,27 +111,28 @@ async def cmd_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
     spread_sign = "+" if spread >= 0 else ""
 
     msg = (
-        f"📊 *{symbol} Detail*\n"
-        f"└ Unified: `{uni}`\n\n"
-        f"═══ *PRICE* ═══\n"
-        f"├ Bybit: `${bb_price:.6f}`\n"
-        f"└ KuCoin: `${kc_price:.6f}`\n\n"
-        f"═══ *SPREAD* ═══\n"
-        f"├ Price Spread: `{spread_sign}{spread:.6f}%`\n"
-        f"└ Arah: `{bybit_action}` Bybit / `{kucoin_action}` KuCoin\n\n"
-        f"═══ *FUNDING RATE* ═══\n"
-        f"├ Bybit: `{bb_rate:+.6f}%`  ({bb_iv}h / next: {bb_next_time})\n"
-        f"├ KuCoin: `{kc_rate:+.6f}%`  ({kc_iv}h / next: {kc_next_time})\n"
-        f"├ Next Pay Bybit: `{bb_next_pay:+.6f}%`\n"
-        f"├ Next Pay KuCoin: `{kc_next_pay:+.6f}%`\n"
-        f"└ Countdown: BB `{bb_ct}`  KC `{kc_ct}`\n\n"
-        f"═══ *DELTA* ═══\n"
-        f"├ Raw FR Diff: `{raw_fr_diff:+.6f}%`\n"
-        f"├ Normalized Diff: `{funding_diff:.6f}%`\n"
-        f"├ Diff Daily: `{diff_daily:.4f}%`\n"
-        f"├ Net Daily: `{net_daily:.4f}%`\n"
-        f"└ Annual APR: `{annual:.2f}%`\n\n"
-        f"📌 *Direction:* `{direction}`"
+        f"📊 {b(f'{symbol} Detail')}\n"
+        f"└ Unified: {code(uni)}\n\n"
+        f"═══ {b('PRICE')} ═══\n"
+        f"├ Bybit: {code(f'${bb_price:.6f}')}\n"
+        f"└ KuCoin: {code(f'${kc_price:.6f}')}\n\n"
+        f"═══ {b('SPREAD')} ═══\n"
+        f"├ Price Spread: {code(f'{spread_sign}{spread:.6f}%')}\n"
+        f"└ Arah: {code(bybit_action)} Bybit / {code(kucoin_action)} KuCoin\n\n"
+        f"═══ {b('FUNDING RATE')} ═══\n"
+        f"├ Bybit: {code(f'{bb_rate:+.6f}%')}  ({bb_iv}h / next: {bb_next_time})\n"
+        f"├ KuCoin: {code(f'{kc_rate:+.6f}%')}  ({kc_iv}h / next: {kc_next_time})\n"
+        f"├ Next Pay Bybit: {code(f'{bb_next_pay:+.6f}%')}\n"
+        f"├ Next Pay KuCoin: {code(f'{kc_next_pay:+.6f}%')}\n"
+        f"└ Countdown: BB {code(bb_ct)}  KC {code(kc_ct)}\n\n"
+        f"═══ {b('DELTA')} ═══\n"
+        f"├ Raw FR Diff: {code(f'{raw_fr_diff:+.6f}%')}\n"
+        f"├ Normalized Diff: {code(f'{funding_diff:.6f}%')}\n"
+        f"├ Diff Daily: {code(f'{diff_daily:.4f}%')}\n"
+        f"├ Net Daily: {code(f'{net_daily:.4f}%')}\n"
+        f"└ Annual APR: {code(f'{annual:.2f}%')}\n\n"
+        f"📌 {b('Direction:')} {code(direction)}\n\n"
+        f"{i('Istilah belum familiar? Ketik /help glossary untuk penjelasan.')}"
     )
 
-    await update.message.reply_text(msg, parse_mode="Markdown")
+    await update.message.reply_text(msg, parse_mode="HTML")

@@ -6,11 +6,12 @@ import time
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from core.tg_format import b, code, esc
 import handlers.state as state
 
 
 async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lines = ["*🏥 EXCHANGE HEALTH*\n"]
+    lines = [f"{b('🏥 EXCHANGE HEALTH')}\n"]
     for name in ("bybit", "kucoin"):
         try:
             t0 = time.time()
@@ -18,9 +19,9 @@ async def cmd_health(update: Update, context: ContextTypes.DEFAULT_TYPE):
             client.fetch_all_funding_rates()
             latency = (time.time() - t0) * 1000
             state.exchange_health[name] = True
-            lines.append(f"🟢 *{name.upper()}* — {latency:.0f}ms")
+            lines.append(f"🟢 {b(name.upper())} — {latency:.0f}ms")
         except Exception as e:
             state.exchange_health[name] = False
-            lines.append(f"🔴 *{name.upper()}* — DOWN: `{e}`")
+            lines.append(f"🔴 {b(name.upper())} — DOWN: {code(str(e))}")
 
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")

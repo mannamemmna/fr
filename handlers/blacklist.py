@@ -7,6 +7,7 @@ from telegram.ext import ContextTypes
 
 from core.db import get_db
 from core.delisting_monitor import check_now
+from core.tg_format import b, i, code, esc
 
 
 async def cmd_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -15,12 +16,12 @@ async def cmd_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not entries:
             await update.message.reply_text("📭 Blacklist kosong — tidak ada simbol yang diblokir.")
             return
-        lines = ["*🚫 DELISTING BLACKLIST*\n"]
+        lines = [f"{b('🚫 DELISTING BLACKLIST')}\n"]
         for e in entries[:30]:
             conf_icon = "🔴" if e["confidence"] == "high" else "🟡"
-            lines.append(f"{conf_icon} *{e['symbol']}* ({e['exchange']})\n   └ {e['reason'][:80]}")
-        lines.append("\n_Gunakan /blacklist remove SYMBOL untuk hapus (false positive)._")
-        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+            lines.append(f"{conf_icon} {b(e['symbol'])} ({esc(e['exchange'])})\n   └ {esc(e['reason'][:80])}")
+        lines.append(f"\n{i('Gunakan /blacklist remove SYMBOL untuk hapus (false positive).')}")
+        await update.message.reply_text("\n".join(lines), parse_mode="HTML")
         return
 
     cmd = context.args[0].lower()
@@ -29,7 +30,7 @@ async def cmd_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         symbol = context.args[1].upper()
         ok = get_db().remove_from_blacklist(symbol)
         await update.message.reply_text(
-            f"✅ {symbol} dihapus dari blacklist." if ok else f"⚠️ {symbol} tidak ada di blacklist."
+            f"✅ {esc(symbol)} dihapus dari blacklist." if ok else f"⚠️ {esc(symbol)} tidak ada di blacklist."
         )
 
     elif cmd == "check":
@@ -46,20 +47,20 @@ async def cmd_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
         symbol = context.args[1].upper()
         entries = [e for e in get_db().get_blacklist() if e["symbol"] == symbol]
         if not entries:
-            await update.message.reply_text(f"⚠️ {symbol} tidak ada di blacklist.")
+            await update.message.reply_text(f"⚠️ {esc(symbol)} tidak ada di blacklist.")
             return
         e = entries[0]
         await update.message.reply_text(
-            f"*{symbol}* ({e['exchange']}, confidence={e['confidence']})\n\n{e['reason']}\n\n{e['announcement_url']}",
-            parse_mode="Markdown",
+            f"{b(symbol)} ({esc(e['exchange'])}, confidence={esc(e['confidence'])})\n\n{esc(e['reason'])}\n\n{esc(e['announcement_url'])}",
+            parse_mode="HTML",
         )
 
     else:
         await update.message.reply_text(
-            "Cara pakai:\n"
-            "`/blacklist` — lihat daftar\n"
-            "`/blacklist check` — cek pengumuman terbaru manual\n"
-            "`/blacklist info SYMBOL` — detail satu simbol\n"
-            "`/blacklist remove SYMBOL` — hapus (kalau false positive)",
-            parse_mode="Markdown",
+            f"Cara pakai:\n"
+            f"<code>/blacklist</code> — lihat daftar\n"
+            f"<code>/blacklist check</code> — cek pengumuman terbaru manual\n"
+            f"<code>/blacklist info SYMBOL</code> — detail satu simbol\n"
+            f"<code>/blacklist remove SYMBOL</code> — hapus (kalau false positive)",
+            parse_mode="HTML",
         )
