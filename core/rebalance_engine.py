@@ -27,7 +27,6 @@ from config import (
     REBALANCE_PAPER_FEE_PCT,
     REBALANCE_PAPER_DELAY_SEC,
     REBALANCE_CHECK_INTERVAL_SEC,
-    REBALANCE_AUTO_TRANSFER,
     PAPER_MODE,
     REBALANCE_LIVE_TRANSFER_ENABLED,
     REBALANCE_LIVE_DRY_RUN,
@@ -95,6 +94,125 @@ class RebalanceEngine:
         self._live_deposit_poll: Optional[Dict[str, Any]] = None
         self._live_internal_transfer_poll: Optional[Dict[str, Any]] = None
         self._last_check_time: float = 0.0
+
+    # ── Restart resumption ──────────────────────────────────────────────
+
+    def resume_from_log(self):
+        """Read data/rebalance_transfers.jsonl on startup and reconstruct
+        in-flight poll state so a bot restart doesn't lose track of — and
+        potentially duplicate — a live transfer already in progress.
+
+        Call exactly once, right after construction, before the automation
+        loop starts ticking. No-op in paper mode (paper transfers are
+        ephemeral and complete within seconds by design)."""
+        if self._paper_mode:
+            return
+        if not os.path.exists(TRANSFER_LOG_FILE):
+            return
+
+        chains: Dict[str, list] = {}
+        with open(TRANSFER_LOG_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cid = entry.get("client_id")
+                if not cid:
+                    continue
+                chains.setdefault(cid, []).append(entry)
+
+        if not chains:
+            return
+
+        # Only the most-recently-touched chain can possibly still be in
+        # flight — start_rebalance() refuses to run while _is_rebalancing is
+        # already True, so any earlier chain must have already reached a
+        # terminal state before this one could have started.
+        latest_cid = max(chains, key=lambda cid: max(e.get("ts", 0) for e in chains[cid]))
+        entries = sorted(chains[latest_cid], key=lambda e: e.get("ts", 0))
+        last = entries[-1]
+        last_type = last.get("type")
+
+        TERMINAL_TYPES = {
+            "withdraw_call_failed", "withdraw_failed",
+            "internal_transfer_call_failed", "internal_transfer_failed",
+            "internal_transfer_complete",
+        }
+        if last.get("dry_run") or last_type in TERMINAL_TYPES:
+            return  # nothing in flight — chain already finished, or was dry-run only
+
+        base = entries[0]
+        record = {k: base.get(k) for k in
+                   ("client_id", "from", "to", "token", "network", "amount", "address", "ts")}
+        record["client_id"] = latest_cid
+
+        self._is_rebalancing = True
+        log.warning("[REBALANCE] Resuming in-flight transfer %s from phase '%s' after restart",
+                    latest_cid, last_type)
+
+        if last_type == "withdraw_submitted":
+            withdraw_id = last.get("withdraw_id")
+            source_client = self._engine.bybit if record["from"] == "bybit" else self._engine.kucoin
+            self._live_withdraw_poll = {
+                "client": source_client, "withdraw_id": withdraw_id,
+                "deadline": time.time() + REBALANCE_WITHDRAW_POLL_TIMEOUT_SEC,
+                "record": record,
+            }
+            return
+
+        if last_type == "withdraw_complete_awaiting_deposit":
+            dest_client = self._engine.kucoin if record["to"] == "kucoin" else self._engine.bybit
+            self._live_deposit_poll = {
+                "client": dest_client, "to_exchange": record["to"],
+                "coin": record["token"], "amount": record["amount"],
+                "address": record["address"], "since_ts": record["ts"],
+                "deadline": time.time() + REBALANCE_DEPOSIT_POLL_TIMEOUT_SEC,
+                "record": record,
+            }
+            return
+
+        if last_type == "internal_transfer_submitted":
+            if record["to"] == "kucoin":
+                # KuCoin's universal-transfer is synchronous — reaching this log
+                # line means the POST already returned success before the crash.
+                # Treat as complete rather than resubmit (resubmitting here WOULD
+                # duplicate a Main→Futures transfer).
+                _log_transfer({**record, "type": "internal_transfer_complete",
+                                "note": "resumed-assumed-complete (kucoin synchronous transfer)"})
+                self._is_rebalancing = False
+                log.warning("[REBALANCE] Resume: KuCoin internal transfer %s assumed complete "
+                            "(crash happened after the synchronous API call succeeded) — "
+                            "VERIFY the Futures balance manually to be sure.", latest_cid)
+                return
+            self._live_internal_transfer_poll = {
+                "to_exchange": record["to"], "transfer_id": last.get("transfer_id"),
+                "deadline": time.time() + REBALANCE_INTERNAL_TRANSFER_POLL_TIMEOUT_SEC,
+                "record": record, "assume_complete": False,
+            }
+            return
+
+        if last_type == "deposit_confirmed":
+            # Ambiguous: we don't know if the internal-transfer call went out
+            # before the crash. Do NOT guess — flag for manual operator check
+            # instead of risking a duplicate internal transfer.
+            self._is_rebalancing = False
+            log.error(
+                "[REBALANCE] Resume: chain %s crashed between deposit confirmation and "
+                "internal transfer submission — state is AMBIGUOUS and was NOT auto-resumed. "
+                "Manually verify whether the %s → %s internal transfer of %.2f %s already "
+                "happened (check both accounts), then run /rebalance to re-trigger if it didn't.",
+                latest_cid, record["from"], record["to"], record["amount"], record["token"],
+            )
+            return
+
+        # Any other/unknown last_type: don't guess, don't silently drop it either.
+        self._is_rebalancing = False
+        log.error("[REBALANCE] Resume: chain %s ended on unrecognized phase '%s' — "
+                  "manual check required.", latest_cid, last_type)
 
     @property
     def enabled(self) -> bool:

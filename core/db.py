@@ -21,6 +21,7 @@ log = logging.getLogger("fr-bot.db")
 # ─── Path ───────────────────────────────────────────────────────────────────
 FULL_DB_PATH = DATA_DIR / Path(DB_PATH)
 DATA_DIR.mkdir(exist_ok=True)
+TRANSFER_LOG_FILE = os.path.join(DATA_DIR, "rebalance_transfers.jsonl")
 
 
 class LocalDB:

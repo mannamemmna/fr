@@ -261,6 +261,18 @@ class AutomationEngine:
         self._notify_chat_id = chat_id
         log.info("Notification target set to chat %s", chat_id)
 
+    def sync_state_with_rebalance_engine(self):
+        """Call once at startup, after self._rebalance_engine is wired AND
+        resume_from_log() has run on it. If a live transfer was found
+        in-flight and resumed, put the state machine directly into
+        REBALANCING — skip _tick_idle's own imbalance-detection path so we
+        don't emit a duplicate 'starting rebalance' notification for a
+        transfer that was already running before the restart."""
+        if self._rebalance_engine and self._rebalance_engine._is_rebalancing:
+            self._state = State.REBALANCING
+            log.warning("Automation engine: resuming REBALANCING state after restart "
+                        "(in-flight transfer detected on disk)")
+
     def start(self):
         if self._thread and self._thread.is_alive():
             return

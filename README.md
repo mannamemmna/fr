@@ -164,7 +164,7 @@ python bot.py
 | `REBALANCE_PAPER_FEE_PCT` | `0.001` | Fee simulasi transfer paper (0.1%) |
 | `REBALANCE_PAPER_DELAY_SEC` | `5` | Delay simulasi transfer paper (detik) |
 | `REBALANCE_CHECK_INTERVAL_SEC` | `60` | Interval polling cek saldo (detik) |
-| `REBALANCE_AUTO_TRANSFER` | `false` | Auto transfer via withdrawal API |
+| `REBALANCE_AUTO_TRANSFER` | `false` | (DEPRECATED) Gunakan `REBALANCE_LIVE_TRANSFER_ENABLED` |
 | `HEDGE_EMERGENCY_OPEN` | `true` | Emergency close jika satu leg hilang |
 | `HEDGE_CHECK_INTERVAL_SEC` | `30` | Interval cek hedge guard (detik) |
 | `HEDGE_BALANCE_DROP_THRESHOLD` | `0.95` | Threshold balance drop (cadangan) |

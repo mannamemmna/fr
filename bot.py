@@ -176,6 +176,8 @@ def main():
         )
         # Inject rebalance engine
         state.auto_engine._rebalance_engine = RebalanceEngine(state.paper_engine, paper_mode=PAPER_MODE)
+        state.auto_engine._rebalance_engine.resume_from_log()
+        state.auto_engine.sync_state_with_rebalance_engine()
         state.auto_engine.start()
         if NOTIFY_CHAT_ID:
             state._notify_chat_id = NOTIFY_CHAT_ID
