@@ -42,25 +42,35 @@ class RateLimiter:
         self._last_refill = now
 
     def acquire(self, block: bool = True) -> bool:
-        """Take one token. Returns True if allowed, False if blocked."""
-        with self._lock:
-            self._refill()
-            if self._tokens >= 1:
-                self._tokens -= 1
-                self._total_calls += 1
-                usage = self._tokens / self.rate
-                if usage >= self.warn_pct:
-                    log.warning("[%s] Rate limit usage at %.0f%%", self.name, usage * 100)
-                return True
-            self._blocked_calls += 1
-            if block:
-                sleep_time = 1.0 / self.rate
-                log.debug("[%s] Rate limited, sleeping %.2fs", self.name, sleep_time)
-                time.sleep(sleep_time)
-                self._tokens = self.rate  # reset after sleep
-                self._tokens -= 1
-                return True
-            return False
+        """Take one token. Returns True if allowed, False if blocked
+        (only possible when block=False)."""
+        while True:
+            with self._lock:
+                self._refill()
+                if self._tokens >= 1:
+                    self._tokens -= 1
+                    self._total_calls += 1
+                    usage = (self.rate - self._tokens) / self.rate
+                    if usage >= self.warn_pct:
+                        log.warning("[%s] Rate limit usage at %.0f%%", self.name, usage * 100)
+                    return True
+                self._blocked_calls += 1
+                if not block:
+                    return False
+                # Not enough tokens yet. Compute how long until there's at
+                # least one, then sleep OUTSIDE the lock — otherwise every
+                # other thread sharing this limiter (e.g. every KuCoin API
+                # call site, which all go through get_limiter("kucoin", ...))
+                # would stall for the full wait too, even ones that already
+                # have a token available and could proceed immediately.
+                deficit = 1 - self._tokens
+                sleep_time = deficit / self.rate
+            log.debug("[%s] Rate limited, sleeping %.2fs", self.name, sleep_time)
+            time.sleep(sleep_time)
+            # Loop back around: re-acquire the lock and let _refill() do the
+            # accounting based on actual elapsed time (monotonic clock) — no
+            # manual token reset needed, so a wait can never hand out more
+            # capacity than was actually earned back.
 
     def __enter__(self):
         self.acquire(block=True)

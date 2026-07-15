@@ -24,3 +24,12 @@ db: "LocalDB | None" = None
 # ─── Runtime state (updated by handlers and engine callbacks) ────────
 last_scan: dict = {}
 exchange_health: dict = {"bybit": True, "kucoin": True}
+
+# Read by core/bg_scanner.py's _send_alert() and written by bot.py (only
+# when NOTIFY_CHAT_ID is set) and handlers/auto.py's "/auto on". Must have
+# a default here — without one, _send_alert() raises an uncaught
+# AttributeError the first time it's called while NOTIFY_CHAT_ID is unset,
+# which silently kills the background scanner's daemon thread (auto-scan
+# stops forever until the bot process is restarted; no crash visible to
+# the operator, Telegram commands keep responding normally).
+_notify_chat_id: str | None = None
