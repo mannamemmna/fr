@@ -167,6 +167,81 @@ class LiveGuardTests(unittest.TestCase):
         summary = engine.get_summary()
         self.assertNotEqual(summary["unrealized_pnl"], 0.0)
 
+    @patch("core.live_engine.time.sleep", return_value=None)
+    def test_close_position_clamps_to_live_size_when_partially_reduced(self, _mock_sleep):
+        bybit, kucoin = _make_clients()
+        engine = LiveEngine(live_confirm=True, bybit_client=bybit, kucoin_client=kucoin)
+        open_result = engine.execute_instant("BTC", 100, "sell", "buy", 3)
+        pos_id = open_result["position"]["id"]
+
+        # Simulate: Bybit leg partially liquidated, now 0.5 live vs 1.0 recorded
+        bybit.get_position_size.return_value = 0.5
+        kucoin.get_position_size.return_value = 1.0
+        bybit.close_market.return_value = {"order_id": "bb-close"}
+        kucoin.close_market.return_value = {"order_id": "kc-close"}
+        bybit.get_order_fill.return_value = {
+            "status": "filled", "filled_qty": 0.5, "avg_price": 100, "fee": 0.03,
+        }
+        kucoin.get_order_fill.return_value = {
+            "status": "filled", "filled_qty": 1.0, "avg_price": 101, "fee": 0.06,
+        }
+
+        result = engine.close_position(pos_id)
+        self.assertTrue(result["ok"])
+        # Bybit close_market should have been called with the clamped live size
+        bb_call_args = bybit.close_market.call_args[0]
+        self.assertEqual(bb_call_args[2], 0.5)  # qty clamped to live size
+        self.assertTrue(result.get("exit_price_estimated"))
+
+    @patch("core.live_engine.time.sleep", return_value=None)
+    def test_close_position_skips_already_flat_leg(self, _mock_sleep):
+        bybit, kucoin = _make_clients()
+        engine = LiveEngine(live_confirm=True, bybit_client=bybit, kucoin_client=kucoin)
+        open_result = engine.execute_instant("BTC", 100, "sell", "buy", 3)
+        pos_id = open_result["position"]["id"]
+
+        # Simulate: Bybit leg fully liquidated, now 0.0 live
+        bybit.get_position_size.return_value = 0.0
+        kucoin.get_position_size.return_value = 1.0
+        kucoin.close_market.return_value = {"order_id": "kc-close"}
+        kucoin.get_order_fill.return_value = {
+            "status": "filled", "filled_qty": 1.0, "avg_price": 101, "fee": 0.06,
+        }
+
+        result = engine.close_position(pos_id)
+        self.assertTrue(result["ok"])
+        # Bybit close_market should NOT have been called (qty <= 0)
+        # Count how many times close_market was called on bybit
+        self.assertEqual(bybit.close_market.call_count, 0)
+        self.assertTrue(kucoin.close_market.called)
+        self.assertTrue(result.get("exit_price_estimated"))
+
+    @patch("core.live_engine.time.sleep", return_value=None)
+    def test_close_position_falls_back_to_recorded_qty_if_live_check_fails(self, _mock_sleep):
+        bybit, kucoin = _make_clients()
+        engine = LiveEngine(live_confirm=True, bybit_client=bybit, kucoin_client=kucoin)
+        open_result = engine.execute_instant("BTC", 100, "sell", "buy", 3)
+        pos_id = open_result["position"]["id"]
+
+        # Simulate: live size check fails (API error) — falls back to recorded qty
+        bybit.get_position_size.side_effect = RuntimeError("API down")
+        kucoin.get_position_size.side_effect = RuntimeError("API down")
+        bybit.close_market.return_value = {"order_id": "bb-close"}
+        kucoin.close_market.return_value = {"order_id": "kc-close"}
+        bybit.get_order_fill.return_value = {
+            "status": "filled", "filled_qty": 1.0, "avg_price": 100, "fee": 0.055,
+        }
+        kucoin.get_order_fill.return_value = {
+            "status": "filled", "filled_qty": 1.0, "avg_price": 101, "fee": 0.06,
+        }
+
+        result = engine.close_position(pos_id)
+        self.assertTrue(result["ok"])
+        # Should fall back to recorded qty (1.0)
+        bb_call_args = bybit.close_market.call_args[0]
+        self.assertGreater(bb_call_args[2], 0)
+        self.assertFalse(result.get("exit_price_estimated"))
+
 
 if __name__ == "__main__":
     unittest.main()

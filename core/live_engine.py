@@ -479,9 +479,33 @@ class LiveEngine:
         qty_bb = float(pos.get("qty_bybit") or pos.get("quantity") or 0)
         qty_kc = float(pos.get("qty_kucoin") or pos.get("quantity") or 0)
 
+        # Defensive re-check: the recorded qty can be stale if the exchange
+        # already reduced or fully closed a leg on its own (margin call /
+        # partial or full liquidation) since entry. Closing with a stale,
+        # too-large qty risks the reduceOnly order being rejected outright,
+        # leaving the position stuck in "closing". Clamp to whatever is
+        # ACTUALLY open right now; skip the call entirely if it's already 0.
+        bb_estimated = kc_estimated = False
         try:
-            bb_order = self.bybit.close_market(symbol, pos["side_bybit"], qty_bb)
-            kc_order = self.kucoin.close_market(symbol, pos["side_kucoin"], qty_kc)
+            live_bb = self.bybit.get_position_size(symbol, pos["side_bybit"])
+            if live_bb >= 0 and live_bb < qty_bb:
+                log.warning("Bybit leg for %s smaller than recorded (%.8f live vs %.8f recorded) — "
+                            "likely partial liquidation. Closing live size instead.", symbol, live_bb, qty_bb)
+                qty_bb, bb_estimated = live_bb, True
+        except Exception:
+            log.warning("Could not verify live Bybit size before close for %s — using recorded qty", symbol)
+        try:
+            live_kc = self.kucoin.get_position_size(symbol, pos["side_kucoin"])
+            if live_kc >= 0 and live_kc < qty_kc:
+                log.warning("KuCoin leg for %s smaller than recorded (%.8f live vs %.8f recorded) — "
+                            "likely partial liquidation. Closing live size instead.", symbol, live_kc, qty_kc)
+                qty_kc, kc_estimated = live_kc, True
+        except Exception:
+            log.warning("Could not verify live KuCoin size before close for %s — using recorded qty", symbol)
+
+        try:
+            bb_order = self.bybit.close_market(symbol, pos["side_bybit"], qty_bb) if qty_bb > 0 else None
+            kc_order = self.kucoin.close_market(symbol, pos["side_kucoin"], qty_kc) if qty_kc > 0 else None
         except Exception as e:
             with self._lock:
                 pos["status"] = "open"
@@ -489,14 +513,39 @@ class LiveEngine:
             return {"ok": False, "critical": True, "error": str(e), "position_id": position_id,
                     "message": "Close failed. Check exchanges manually."}
 
-        # Verifikasi fill AKTUAL (harga + fee)
-        bb_fill = self._poll_fill(self.bybit, "bybit", symbol, bb_order["order_id"], qty_bb)
-        kc_fill = self._poll_fill(self.kucoin, "kucoin", symbol, kc_order["order_id"], qty_kc)
+        # A leg with qty<=0 was already flat before we acted (fully
+        # liquidated out-of-band) — synthesize a zero fill instead of
+        # polling an order that was never placed.
+        if bb_order is not None:
+            bb_fill = self._poll_fill(self.bybit, "bybit", symbol, bb_order["order_id"], qty_bb)
+        else:
+            bb_fill = {"status": "filled", "filled_qty": 0.0, "avg_price": 0.0, "fee": 0.0}
+        if kc_order is not None:
+            kc_fill = self._poll_fill(self.kucoin, "kucoin", symbol, kc_order["order_id"], qty_kc)
+        else:
+            kc_fill = {"status": "filled", "filled_qty": 0.0, "avg_price": 0.0, "fee": 0.0}
 
         bb_exit_price = bb_fill.get("avg_price") or 0.0
         kc_exit_price = kc_fill.get("avg_price") or 0.0
         exit_fee_bb = bb_fill.get("fee", 0.0)
         exit_fee_kc = kc_fill.get("fee", 0.0)
+
+        # For a leg the exchange already closed out-of-band before we got to
+        # it, there's no fill record for the involuntarily-closed portion —
+        # fall back to current mark price so PnL isn't silently zeroed. This
+        # is an ESTIMATE, not the actual liquidation fill price/fee; the
+        # true liquidation P&L for that portion isn't recoverable from this
+        # code path and should be reconciled against exchange history.
+        if bb_estimated and bb_exit_price == 0.0:
+            try:
+                bb_exit_price = self.bybit.get_ticker(symbol)["mark_price"]
+            except Exception:
+                log.warning("Could not fetch Bybit mark price fallback for estimated exit on %s", symbol)
+        if kc_estimated and kc_exit_price == 0.0:
+            try:
+                kc_exit_price = self.kucoin.get_ticker(symbol)["mark_price"]
+            except Exception:
+                log.warning("Could not fetch KuCoin mark price fallback for estimated exit on %s", symbol)
 
         entry_bb = float(pos.get("entry_price_bybit", 0) or 0)
         entry_kc = float(pos.get("entry_price_kucoin", 0) or 0)
@@ -534,6 +583,8 @@ class LiveEngine:
             pos["exit_time"] = _utcnow_iso()
             pos["exit_price_bybit"] = bb_exit_price
             pos["exit_price_kucoin"] = kc_exit_price
+            pos["exit_price_bybit_estimated"] = bb_estimated
+            pos["exit_price_kucoin_estimated"] = kc_estimated
             pos["exit_fee_bybit"] = round(exit_fee_bb, 8)
             pos["exit_fee_kucoin"] = round(exit_fee_kc, 8)
             pos["total_price_pnl"] = round(total_price_pnl, 8)
@@ -554,6 +605,7 @@ class LiveEngine:
             "side_bybit": pos.get("side_bybit"), "side_kucoin": pos.get("side_kucoin"),
             "entry_price_bybit": entry_bb, "entry_price_kucoin": entry_kc,
             "exit_price_bybit": bb_exit_price, "exit_price_kucoin": kc_exit_price,
+            "exit_price_estimated": bool(bb_estimated or kc_estimated),
             "price_pnl": round(total_price_pnl, 2),
             "funding_pnl": round(funding["funding_pnl"], 2),
             "fr_paid": round(funding["fr_paid"], 2),
@@ -575,11 +627,16 @@ class LiveEngine:
         with self._lock:
             return [p for p in self._positions if p.get("status") == "open"]
 
-    def get_position_status(self, symbol: str, side_bb: str, side_kc: str) -> Dict[str, str]:
+    def get_position_status(self, symbol: str, side_bb: str, side_kc: str) -> Dict[str, Any]:
+        """Per-leg status + raw size. bybit_size/kucoin_size are included
+        (not just open/closed) so callers can detect PARTIAL degradation —
+        a leg that's been tiered/partially liquidated but not fully closed
+        still reports 'open' here; comparing the raw sizes against the
+        position's recorded qty is what catches that case."""
         bb_size = self.bybit.get_position_size(symbol, side_bb)
         kc_size = self.kucoin.get_position_size(symbol, side_kc)
 
-        status = {}
+        status: Dict[str, Any] = {"bybit_size": bb_size, "kucoin_size": kc_size}
         if bb_size < 0:
             status["bybit"] = "unknown"
         elif bb_size == 0:

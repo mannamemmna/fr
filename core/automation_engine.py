@@ -82,6 +82,25 @@ def _dominant_exchange_ts(opp: dict) -> int:
     return 0
 
 
+def _hedge_leg_drift(bb_size: float, kc_size: float,
+                      expected_bb: float, expected_kc: float) -> Optional[float]:
+    """How far apart the two legs' remaining-size ratios are, or None if
+    there's nothing valid to compare against.
+
+    0.0 means both legs still hold their full entry size (or have drifted
+    down by the same proportion — not possible in practice for a hedge, but
+    mathematically well-defined). 1.0 means one leg is fully gone while the
+    other is fully intact. Catches PARTIAL liquidation (e.g. one leg tiered
+    down to 40% of entry size while the other stays at 100%) in addition to
+    the full-leg-loss case the exchange-status check already catches.
+    """
+    if expected_bb <= 0 or expected_kc <= 0:
+        return None
+    ratio_bb = max(0.0, min(bb_size / expected_bb, 1.0))
+    ratio_kc = max(0.0, min(kc_size / expected_kc, 1.0))
+    return abs(ratio_bb - ratio_kc)
+
+
 # ─── State enum ────────────────────────────────────────────────────────────
 
 
@@ -735,12 +754,30 @@ class AutomationEngine:
                         live_eng = getattr(self, "_live_engine", None)
                         if live_eng:
                             status = live_eng.get_position_status(pos["symbol"], side_bb, side_kc)
-                            if status.get("bybit") == "closed" and status.get("kucoin") == "open":
+                            bb_status, kc_status = status.get("bybit"), status.get("kucoin")
+                            if bb_status == "closed" and kc_status == "open":
                                 emergency = True
                                 reason = "Bybit position closed (margin call?), KuCoin still open"
-                            elif status.get("kucoin") == "closed" and status.get("bybit") == "open":
+                            elif kc_status == "closed" and bb_status == "open":
                                 emergency = True
                                 reason = "KuCoin position closed (margin call?), Bybit still open"
+                            elif bb_status == "open" and kc_status == "open":
+                                # Both legs nominally open — check for PARTIAL
+                                # degradation (tiered/partial liquidation
+                                # reduces size without fully closing it, so
+                                # the open/closed check above can't see it).
+                                expected_bb = float(pos.get("qty_bybit") or pos.get("quantity") or 0)
+                                expected_kc = float(pos.get("qty_kucoin") or pos.get("quantity") or 0)
+                                drift = _hedge_leg_drift(
+                                    status.get("bybit_size", -1), status.get("kucoin_size", -1),
+                                    expected_bb, expected_kc,
+                                )
+                                if drift is not None and drift > (1.0 - HEDGE_BALANCE_DROP_THRESHOLD):
+                                    emergency = True
+                                    reason = (
+                                        f"Leg size mismatch detected (partial liquidation?) — "
+                                        f"drift {drift * 100:.1f}% between Bybit and KuCoin remaining size"
+                                    )
                     except Exception:
                         log.warning("LIVE hedge check failed (API error), skipping this interval")
 
