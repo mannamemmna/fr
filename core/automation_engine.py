@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from enum import Enum
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from config import (
     AUTO_MODE,
@@ -109,7 +109,25 @@ class State(Enum):
     REBALANCING = "rebalancing"
     LOOKING = "looking"
     DELAY = "delay"
-    LIVE = "live"
+
+
+# ─── Live tracked position ──────────────────────────────────────────────
+
+
+@dataclass
+class LiveTrackedPosition:
+    """Per-position monitoring state for one open LIVE position. One
+    instance per concurrently-open position — replaces the old singular
+    _live_order / _live_position_id / _hedge_triggered /
+    _funding_threshold_met / _last_hedge_check / _entry_balance_snapshot,
+    which could only ever track ONE position even though
+    AUTO_MAX_POSITIONS and _delay_orders both support more."""
+    position_id: str
+    order: "DelayOrder"
+    funding_threshold_met: bool = False
+    hedge_triggered: bool = False
+    last_hedge_check: float = 0.0
+    entry_balance_snapshot: dict = field(default_factory=dict)
 
 
 # ─── Delay order record ────────────────────────────────────────────────────
@@ -245,12 +263,7 @@ class AutomationEngine:
 
         # Current state data
         self._delay_orders: List[DelayOrder] = []   # list pending delay orders (multi-position support)
-        self._live_order: Optional[DelayOrder] = None  # order yg sudah masuk LIVE
-        self._live_position_id: Optional[str] = None
-        self._funding_threshold_met: bool = False   # Tahap 1 LIVE: sudah terpenuhi?
-        self._last_hedge_check: float = 0.0       # Hedge guard throttle
-        self._hedge_triggered: bool = False       # Already emergency-closing
-        self._entry_balance_snapshot: dict = {}   # Balance snapshot saat LIVE entry
+        self._live_positions: Dict[str, LiveTrackedPosition] = {}
         self._last_scan: dict = {}
         self._last_log = time.time()
         self._delay_notified: set = set()   # simpan symbol yg sudah dinotifikasi delay
@@ -293,26 +306,32 @@ class AutomationEngine:
                         "(in-flight transfer detected on disk)")
 
     def resume_live_position(self, position: dict):
-        """Call once at startup (live mode only), before start(), if
-        LiveEngine has exactly one open position left over from before a
-        restart. Reconstructs a DelayOrder from the fields persisted on the
-        position record so _tick_live can resume monitoring exit
-        conditions (hedge guard, delisting guard, funding-reversal / diff-
-        interval exit) without waiting for a fresh entry.
-
-        Caller is responsible for deciding whether resuming is safe (e.g.
-        skipping this when more than one open position exists, or when a
-        rebalance is also in-flight) — this method always resumes
-        unconditionally into LIVE for whatever position it's given.
+        """Call at startup (live mode only), before start(), once per open
+        position LiveEngine loaded from disk left over from before a
+        restart. Safe to call multiple times for multiple positions — the
+        automation engine tracks LIVE positions in a dict keyed by
+        position_id, so more than one can be monitored concurrently.
+        Reconstructs a DelayOrder from the fields persisted on the
+        position record so the per-position tick can resume monitoring
+        exit conditions (hedge guard, delisting guard, funding-reversal /
+        diff-interval exit) without waiting for a fresh entry.
 
         created_at is set to *now* rather than the true original entry
         time — this only affects Jalur A's LIVE_DIFF_HOLD_MAX_MINUTES
         safety window, which restarts the clock on resume. That's the
         conservative direction (a shorter effective hold before forced
         exit, never longer), so approximating it is safe.
+
+        Deliberately does not touch self._state. Live-position monitoring
+        runs unconditionally every tick whenever self._live_positions is
+        non-empty (see _tick()), independent of the entry-side
+        IDLE/LOOKING/DELAY state machine — so there's no state to "enter"
+        here, and setting one would incorrectly block the engine from
+        seeking additional entries if AUTO_MAX_POSITIONS allows more.
         """
         symbol = position.get("symbol", "")
-        self._live_order = DelayOrder(
+        position_id = position.get("id")
+        order = DelayOrder(
             symbol=symbol,
             side_bybit=position.get("side_bybit", ""),
             side_kucoin=position.get("side_kucoin", ""),
@@ -334,14 +353,17 @@ class AutomationEngine:
                 "kucoin_next_ts": position.get("kucoin_next_ts", 0),
             }),
         )
-        self._live_position_id = position.get("id")
-        self._entry_balance_snapshot = {"time": time.time()}
-        self._last_hedge_check = 0.0
-        self._hedge_triggered = False
-        self._funding_threshold_met = False
-        self._state = State.LIVE
+        self._live_positions[position_id] = LiveTrackedPosition(
+            position_id=position_id,
+            order=order,
+            # Force an immediate hedge check on this position's very next
+            # tick rather than waiting a full HEDGE_CHECK_INTERVAL_SEC — a
+            # hedge break could have happened while the bot was down.
+            last_hedge_check=0.0,
+            entry_balance_snapshot={"time": time.time()},
+        )
         log.warning("Automation engine: resumed LIVE monitoring for %s (position %s) after restart",
-                    symbol, str(self._live_position_id)[:12])
+                    symbol, str(position_id)[:12])
 
     def start(self):
         if self._thread and self._thread.is_alive():
@@ -362,8 +384,17 @@ class AutomationEngine:
             self._enabled = False
             self._state = State.IDLE
             self._delay_orders.clear()
-            self._live_order = None
-            self._live_position_id = None
+            # Deliberately NOT clearing self._live_positions: /auto off
+            # stops the engine from opening NEW trades (hence cancelling
+            # pending, not-yet-executed delay orders) but must not cause
+            # it to "forget" a position that's already open on the
+            # exchange. Re-enabling via /auto on picks monitoring back up
+            # with no gap, the same way a restart-resume would. Note this
+            # does NOT mean the hedge guard keeps running while disabled —
+            # _tick() itself still doesn't run at all while self._enabled
+            # is False (see _loop() below), same as before. This only
+            # prevents a disable/enable cycle from silently orphaning an
+            # open position the way a process restart used to.
         self._emit_event("state_change", "🔴 Auto mode OFF — all pending orders cancelled")
         log.info("Auto mode DISABLED")
 
@@ -383,8 +414,14 @@ class AutomationEngine:
     def _tick(self):
         """One automation cycle."""
         now = time.time()
-        state = self._state
 
+        # Live positions are monitored every tick, independent of the
+        # entry-side state machine below — multiple LIVE positions and
+        # pending DELAY orders can coexist (bounded by AUTO_MAX_POSITIONS).
+        if self._live_positions:
+            self._tick_live_positions(now)
+
+        state = self._state
         if state == State.IDLE:
             self._tick_idle(now)
         elif state == State.REBALANCING:
@@ -393,8 +430,6 @@ class AutomationEngine:
             self._tick_looking(now)
         elif state == State.DELAY:
             self._tick_delay(now)
-        elif state == State.LIVE:
-            self._tick_live(now)
 
     # ─── IDLE ──────────────────────────────────────────────────────────
 
@@ -699,7 +734,6 @@ class AutomationEngine:
             if not engine:
                 log.error("Live engine not available")
                 self._emit_event("error", "🔴 Live engine tidak tersedia")
-                self._live_order = None
                 self._state = State.IDLE
                 return
 
@@ -714,23 +748,23 @@ class AutomationEngine:
         if result["status"] == "done":
             pos = result.get("position", {})
             order.position_id = pos.get("id")
-            self._live_position_id = order.position_id
-            self._live_order = order
 
-            # Snapshot balance untuk hedge guard
             summary = self._paper.get_summary()
-            self._entry_balance_snapshot = {
-                "bybit": summary.get("bybit_balance", 0),
-                "kucoin": summary.get("kucoin_balance", 0),
-                "time": time.time(),
-            }
-            self._last_hedge_check = time.time()
-            self._hedge_triggered = False
+            self._live_positions[order.position_id] = LiveTrackedPosition(
+                position_id=order.position_id,
+                order=order,
+                last_hedge_check=time.time(),
+                entry_balance_snapshot={
+                    "bybit": summary.get("bybit_balance", 0),
+                    "kucoin": summary.get("kucoin_balance", 0),
+                    "time": time.time(),
+                },
+            )
             self._delisting_alerted.discard(order.symbol)  # reset alert untuk simbol ini
 
             mins_left = time_left / 60
-            self._state = State.LIVE
-            log.info("DELAY → LIVE: %s executed, monitoring reversal", order.symbol)
+            log.info("DELAY → LIVE (tracked): %s executed, monitoring reversal (%d live position(s) total)",
+                      order.symbol, len(self._live_positions))
             pos_size_val = pos.get('position_size', order.amount_usd * order.leverage)
             bb_rate_s = f"{current.get('bybit_rate_pct', 0):.4f}%"
             kc_rate_s = f"{current.get('kucoin_rate_pct', 0):.4f}%"
@@ -751,43 +785,43 @@ class AutomationEngine:
         else:
             errors = "\n".join(result.get("errors", ["unknown"]))
             self._emit_event("error", f"❌ Auto execution failed: {esc(errors)}")
-            self._live_order = None
             self._state = State.LOOKING
 
     # ─── LIVE ───────────────────────────────────────────────────────────
 
-    def _tick_live(self, now: float):
-        """Monitor open position for funding reversal."""
-        pos_id = self._live_position_id
-        if not pos_id:
-            self._state = State.IDLE
-            return
+    def _tick_live_positions(self, now: float):
+        """Tick every currently-tracked LIVE position once. Called
+        unconditionally from _tick() whenever self._live_positions is
+        non-empty, independent of the entry-side state machine."""
+        # Snapshot the list before iterating — a position closing mid-loop
+        # removes itself from self._live_positions via
+        # _tick_one_live_position, which would otherwise mutate the dict
+        # while iterating over it.
+        for tracked in list(self._live_positions.values()):
+            try:
+                self._tick_one_live_position(now, tracked)
+            except Exception:
+                log.exception("Live position tick failed for %s (%s)",
+                              tracked.position_id[:12], tracked.order.symbol)
 
-        # Verify position still open
+    def _tick_one_live_position(self, now: float, tracked: "LiveTrackedPosition"):
+        pos_id = tracked.position_id
+
         positions = self._paper.get_open_positions()
         pos = next((p for p in positions if p.get("id") == pos_id), None)
         if not pos:
-            log.info("LIVE → IDLE: position %s closed (manual?)", pos_id[:12])
+            log.info("LIVE → closed (manual?): %s", pos_id[:12])
             self._emit_event("state_change", f"📭 Position closed — back to IDLE")
-            self._live_position_id = None
-            self._live_order = None
-            self._funding_threshold_met = False
-            self._hedge_triggered = False
-            self._entry_balance_snapshot.clear()
-            self._state = State.IDLE
+            self._live_positions.pop(pos_id, None)
             return
 
-        # ── HEDGE INTEGRITY GUARD ───────────────────────────────────────
-        # Cek apakah salah satu leg sudah mati (margin call / manual close / likuidasi)
-        if HEDGE_EMERGENCY_OPEN and not self._hedge_triggered:
-            now = time.time()
-            if now - self._last_hedge_check >= HEDGE_CHECK_INTERVAL_SEC:
-                self._last_hedge_check = now
+        if HEDGE_EMERGENCY_OPEN and not tracked.hedge_triggered:
+            if now - tracked.last_hedge_check >= HEDGE_CHECK_INTERVAL_SEC:
+                tracked.last_hedge_check = now
                 emergency = False
                 reason = ""
 
                 if PAPER_MODE:
-                    # Paper: cek legs_status di position
                     legs = pos.get("legs_status", {})
                     bb_open = legs.get("bybit") == "open"
                     kc_open = legs.get("kucoin") == "open"
@@ -798,7 +832,6 @@ class AutomationEngine:
                         emergency = True
                         reason = "Bybit leg closed, KuCoin still open"
                 else:
-                    # Live: cek via exchange API (1 call/exchange per interval)
                     try:
                         side_bb = pos.get("side_bybit", "").lower()
                         side_kc = pos.get("side_kucoin", "").lower()
@@ -833,7 +866,7 @@ class AutomationEngine:
                         log.warning("LIVE hedge check failed (API error), skipping this interval")
 
                 if emergency:
-                    self._hedge_triggered = True
+                    tracked.hedge_triggered = True
                     log.warning("HEDGE EMERGENCY: %s — %s", pos["symbol"], reason)
                     self._emit_event(
                         "state_change",
@@ -841,7 +874,6 @@ class AutomationEngine:
                         f"{esc(reason)}\n\n"
                         f"⚡ {i('Emergency close — menutup leg satunya...')}"
                     )
-                    # Close the full position (remaining leg gets closed too)
                     if PAPER_MODE:
                         close_engine = self._paper
                     else:
@@ -857,17 +889,11 @@ class AutomationEngine:
                         )
                     else:
                         self._emit_event("error", f"❌ Emergency close failed: {esc(result.get('error', 'unknown'))}")
-                    self._live_position_id = None
-                    self._live_order = None
-                    self._funding_threshold_met = False
-                    self._hedge_triggered = False
-                    self._state = State.IDLE
+                    self._live_positions.pop(pos_id, None)
                     return
 
-        # Get current scan for this symbol
         symbol = pos["symbol"]
 
-        # ─── DELISTING GUARD ────────────────────────────────────────────────
         if symbol not in self._delisting_alerted and symbol in self._get_blacklist_cached(now):
             self._delisting_alerted.add(symbol)
             self._emit_event(
@@ -890,16 +916,10 @@ class AutomationEngine:
                     )
                 else:
                     self._emit_event("error", f"❌ Auto-close delisting gagal: {esc(result.get('error', 'unknown'))}")
-                self._live_position_id = None
-                self._live_order = None
-                self._funding_threshold_met = False
-                self._hedge_triggered = False
                 self._delisting_alerted.discard(symbol)
-                self._entry_balance_snapshot.clear()
-                self._state = State.IDLE
+                self._live_positions.pop(pos_id, None)
                 return
 
-        # Get current scan for this symbol
         scan = self._get_scan()
         current = None
         for opp in scan:
@@ -908,37 +928,27 @@ class AutomationEngine:
                 break
 
         if not current:
-            return  # No data yet, keep monitoring
+            return
 
-        # ── Cek interval REAL-TIME dari scan (via WS cache, 0 REST) ────────
         bb_iv = current.get("bybit_interval_h", 0) or 0
         kc_iv = current.get("kucoin_interval_h", 0) or 0
         intervals_same = (bb_iv == kc_iv) and bb_iv > 0
 
-        # ── LIVE EXIT: 2 jalur tergantung interval ────────────────────────
-        #   Jalur A (interval beda): exit after dominant payment + safety
-        #   Jalur B (interval sama): existing FR decay + spread
-
-        # 1. Hitung Price Spread: ((P_Long - P_Short) / P_Short * 100)
         side_bb = pos.get("side_bybit", "").lower()
         side_kc = pos.get("side_kucoin", "").lower()
         price_spread_now = self._calculate_price_spread(current, side_bb, side_kc)
 
-        # 2. Ambil kondisi entry & current (untuk laporan summary)
         entry_spread = pos.get("entry_spread", 0) or 0
         current_spread = current.get("spread_pct", 0) or 0
         current_delta = current.get("delta_pct", 0) or 0
-        live_order = self._live_order
+        live_order = tracked.order
         entry_delta = live_order.entry_delta if live_order else current_delta
 
-        # ── LIVE EXIT: 2 Jalur tergantung interval ─────────────────────────
-        #   Jalur A (interval beda): exit after dominant payment + safety
-        #   Jalur B (interval sama): existing FR decay + spread
         if intervals_same:
-            self._tick_live_same_interval(now, pos_id, pos, current, current_delta, price_spread_now,
+            self._tick_live_same_interval(now, tracked, pos, current, current_delta, price_spread_now,
                                           entry_spread, current_spread, entry_delta, live_order, symbol)
         else:
-            self._tick_live_diff_interval(now, pos_id, pos, current, price_spread_now,
+            self._tick_live_diff_interval(now, tracked, pos, current, price_spread_now,
                                           entry_spread, current_spread, entry_delta, live_order, symbol)
 
     # ─── LIVE — Jalur A: Interval BEDA ──────────────────────────────────
@@ -992,7 +1002,7 @@ class AutomationEngine:
             "is_profitable": estimated_pnl > 0,
         }
 
-    def _tick_live_diff_interval(self, now, pos_id, pos, current, price_spread_now,
+    def _tick_live_diff_interval(self, now, tracked, pos, current, price_spread_now,
                                   entry_spread, current_spread, entry_delta, live_order, symbol):
         """Exit untuk interval beda — pakai estimated PnL sebagai trigger utama."""
         EXIT_AFTER_PAYMENT_SEC = 300  # 5 menit setelah payment dominant
@@ -1058,14 +1068,8 @@ class AutomationEngine:
                 "close",
                 _format_trade_summary(result, symbol, entry_spread, current_spread, entry_delta, current_delta_val),
             )
-            self._live_position_id = None
-            self._live_order = None
-            self._funding_threshold_met = False
-            self._hedge_triggered = False
-            self._entry_balance_snapshot.clear()
-            self._state = State.IDLE
+            self._live_positions.pop(pos_id, None)
         else:
-            # Log status setiap 60 detik
             if now - self._last_log > 60:
                 dom_str = f"Payment +{EXIT_AFTER_PAYMENT_SEC//60}m di {datetime.fromtimestamp(dominant_ts, tz=timezone(timedelta(hours=7))).strftime('%H:%M WIB')}" if dominant_ts else "N/A"
                 log.info("LIVE DIFF %s: spread=%.4f%% est_pnl=$%.2f hold=%ds/%ds %s",
@@ -1075,11 +1079,11 @@ class AutomationEngine:
 
     # ─── LIVE — Jalur B: Interval SAMA ──────────────────────────────────
 
-    def _tick_live_same_interval(self, now, pos_id, pos, current, current_delta, price_spread_now,
+    def _tick_live_same_interval(self, now, tracked, pos, current, current_delta, price_spread_now,
                                   entry_spread, current_spread, entry_delta, live_order, symbol):
         """Existing 2-tahap exit: FR decay → spread positive."""
         # ── Tahap 1: FR decay / flip ──
-        if not self._funding_threshold_met:
+        if not tracked.funding_threshold_met:
             current_raw = current.get("raw_fr_diff", 0) or 0
             entry_raw = live_order.entry_raw_fr_diff if live_order else current_raw
             threshold_met = abs(current_delta) <= AUTO_LIVE_CLOSE_FUNDING_DIFF
@@ -1095,7 +1099,7 @@ class AutomationEngine:
                     trigger_reason = "Arah FR flip"
 
             if trigger_reason:
-                self._funding_threshold_met = True
+                tracked.funding_threshold_met = True
                 log.info("LIVE SAME Tahap 1: %s — %s", symbol, trigger_reason)
                 self._emit_event(
                     "state_change",
@@ -1126,12 +1130,7 @@ class AutomationEngine:
                 "close",
                 _format_trade_summary(result, symbol, entry_spread, current_spread, entry_delta, current_delta),
             )
-            self._live_position_id = None
-            self._live_order = None
-            self._funding_threshold_met = False
-            self._hedge_triggered = False
-            self._entry_balance_snapshot.clear()
-            self._state = State.IDLE
+            self._live_positions.pop(pos_id, None)
         else:
             log.debug("LIVE SAME %s: Tahap 2 — tunggu spread %.4f%% ≥ %.4f%%",
                       symbol, price_spread_now, AUTO_LIVE_CLOSE_PRICE_SPREAD)
@@ -1314,13 +1313,16 @@ class AutomationEngine:
             State.REBALANCING: "⚖️ Rebalancing — menunggu transfer selesai",
             State.LOOKING: "🔍 Scanning for best pair…",
             State.DELAY: "⏳ Delay order pending — monitoring spread…",
-            State.LIVE: "📈 Position live — monitoring reversal…",
         }
+        base_desc = state_info.get(self._state, "?")
+        if self._live_positions:
+            state_desc = f"📈 Memantau {len(self._live_positions)} posisi live — {base_desc}"
+        else:
+            state_desc = base_desc
 
         status = {
-            "enabled": self._enabled,
-            "state": self._state.value,
-            "state_desc": state_info.get(self._state, "?"),
+            "enabled": self._enabled, "state": self._state.value,
+            "state_desc": state_desc,
         }
 
         if self._delay_orders:
@@ -1336,8 +1338,8 @@ class AutomationEngine:
                 "age_seconds": round(time.time() - do.created_at, 1),
             }
 
-        if self._live_position_id:
-            status["live_position"] = self._live_position_id[:12]
+        if self._live_positions:
+            status["live_positions"] = [pid[:12] for pid in self._live_positions.keys()]
 
         if self._state == State.REBALANCING and self._rebalance_engine:
             rb = self._rebalance_engine.get_status()

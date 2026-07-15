@@ -49,8 +49,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔸 Diff FR: {code(delta_str)}\n"
                 f"🔸 Modal: ${d['amount']:.0f} × {d['leverage']}x"
             )
-        elif eng.get("live_position"):
-            eng_detail = f"🔸 Posisi: {code(eng['live_position'][:8] + '...')}"
+        elif eng.get("live_positions"):
+            n = len(eng["live_positions"])
+            eng_detail = f"🔸 Posisi aktif: {n} — {code(', '.join(eng['live_positions']))}"
         else:
             eng_detail = f"🔸 State: {esc(eng_state)}"
     else:

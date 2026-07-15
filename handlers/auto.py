@@ -28,8 +28,9 @@ async def cmd_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Modal: {code(amount_s)} × {d['leverage']}x\n"
                 f"Diff FR: {code(delta_s)}"
             )
-        if s.get("live_position"):
-            extra += f"\n\n📈 Posisi aktif: {code(s['live_position'][:8] + '...')}"
+        if s.get("live_positions"):
+            ids = ", ".join(code(pid + "...") for pid in s["live_positions"])
+            extra += f"\n\n📈 Posisi aktif ({len(s['live_positions'])}): {ids}"
 
         await update.message.reply_text(
             f"{b('🤖 AUTO ENGINE')}\n\n"
