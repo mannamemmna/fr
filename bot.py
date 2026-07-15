@@ -17,7 +17,7 @@ from config import (
 )
 from core.paper_engine import PaperEngine
 from core.live_engine import LiveEngine, LiveModeLockedError, MissingLiveCredentialsError
-from core.automation_engine import AutomationEngine, AutoEvent
+from core.automation_engine import AutomationEngine, AutoEvent, State
 from core.rebalance_engine import RebalanceEngine
 from core.bg_scanner import start_bg_scanner
 from core.scheduler import register_jobs
@@ -178,6 +178,57 @@ def main():
         state.auto_engine._rebalance_engine = RebalanceEngine(state.paper_engine, paper_mode=PAPER_MODE)
         state.auto_engine._rebalance_engine.resume_from_log()
         state.auto_engine.sync_state_with_rebalance_engine()
+
+        # 🛡️ Live-mode restart resume: pick monitoring back up for a
+        # position that was already open before this restart, so the
+        # hedge guard / delisting guard / exit logic don't go dark just
+        # because the process bounced. (Paper-mode's equivalent handling
+        # happens above, before the engines existed — it auto-closes by
+        # default since paper positions are cheap to re-open, which isn't
+        # a reasonable default for real money.)
+        if not PAPER_MODE:
+            from core.tg_format import b, code, i
+            open_live_positions = state.paper_engine.get_open_positions()
+            resume_msg = None
+            if len(open_live_positions) == 1 and state.auto_engine.state != State.REBALANCING:
+                pos = open_live_positions[0]
+                state.auto_engine.resume_live_position(pos)
+                resume_msg = (
+                    f"⚠️ {b('BOT RESTART — RESUMED LIVE POSITION MONITORING')}\n\n"
+                    f"{b(pos['symbol'])} — ${pos.get('amount_usd', 0):.0f} × {pos.get('leverage', '?')}x — "
+                    f"{code(pos['id'][:8] + '…')}\n\n"
+                    f"{i('Automation engine is watching this position again (hedge guard, exit logic, delisting guard).')}"
+                )
+                log.warning("Resumed LIVE monitoring for position %s after restart", pos["id"][:12])
+            elif len(open_live_positions) > 1:
+                resume_msg = (
+                    f"🚨 {b('BOT RESTART — MULTIPLE OPEN LIVE POSITIONS FOUND')}\n\n"
+                    f"Found {len(open_live_positions)} open positions, but automation can only "
+                    f"actively monitor one at a time — NONE were auto-resumed, to avoid guessing wrong.\n\n"
+                    f"{i('Check /portfolio and verify each position manually.')}"
+                )
+                log.error("Restart found %d open live positions — ambiguous, NOT auto-resumed",
+                          len(open_live_positions))
+            elif open_live_positions:  # exactly one, but rebalance already claimed the state
+                resume_msg = (
+                    f"🚨 {b('BOT RESTART — OPEN POSITION FOUND DURING IN-FLIGHT REBALANCE')}\n\n"
+                    f"{b(open_live_positions[0]['symbol'])} is open, but a rebalance transfer was also "
+                    f"in-flight at restart — NOT auto-resumed, to avoid state conflicts.\n\n"
+                    f"{i('Let the rebalance finish (/rebalance for status), then verify the position manually.')}"
+                )
+                log.error("Restart found 1 open live position but rebalance state took priority — not auto-resumed")
+
+            if resume_msg and NOTIFY_CHAT_ID:
+                try:
+                    import requests
+                    requests.post(
+                        f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                        json={"chat_id": NOTIFY_CHAT_ID, "text": resume_msg, "parse_mode": "HTML"},
+                        timeout=5,
+                    )
+                except Exception as _e:
+                    log.warning("Failed to send live-resume restart notice: %s", _e)
+
         state.auto_engine.start()
         if NOTIFY_CHAT_ID:
             state._notify_chat_id = NOTIFY_CHAT_ID

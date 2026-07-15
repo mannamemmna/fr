@@ -292,6 +292,57 @@ class AutomationEngine:
             log.warning("Automation engine: resuming REBALANCING state after restart "
                         "(in-flight transfer detected on disk)")
 
+    def resume_live_position(self, position: dict):
+        """Call once at startup (live mode only), before start(), if
+        LiveEngine has exactly one open position left over from before a
+        restart. Reconstructs a DelayOrder from the fields persisted on the
+        position record so _tick_live can resume monitoring exit
+        conditions (hedge guard, delisting guard, funding-reversal / diff-
+        interval exit) without waiting for a fresh entry.
+
+        Caller is responsible for deciding whether resuming is safe (e.g.
+        skipping this when more than one open position exists, or when a
+        rebalance is also in-flight) — this method always resumes
+        unconditionally into LIVE for whatever position it's given.
+
+        created_at is set to *now* rather than the true original entry
+        time — this only affects Jalur A's LIVE_DIFF_HOLD_MAX_MINUTES
+        safety window, which restarts the clock on resume. That's the
+        conservative direction (a shorter effective hold before forced
+        exit, never longer), so approximating it is safe.
+        """
+        symbol = position.get("symbol", "")
+        self._live_order = DelayOrder(
+            symbol=symbol,
+            side_bybit=position.get("side_bybit", ""),
+            side_kucoin=position.get("side_kucoin", ""),
+            amount_usd=float(position.get("amount_usd", 0) or 0),
+            leverage=int(position.get("leverage", 1) or 1),
+            entry_price_spread=float(position.get("entry_spread", 0) or 0),
+            entry_delta=float(position.get("entry_delta", 0) or 0),
+            entry_raw_fr_diff=float(position.get("entry_raw_fr_diff", 0) or 0),
+            bybit_rate=float(position.get("entry_rate_bybit", 0) or 0),
+            kucoin_rate=float(position.get("entry_rate_kucoin", 0) or 0),
+            bybit_next_ts=int(position.get("bybit_next_ts", 0) or 0),
+            kucoin_next_ts=int(position.get("kucoin_next_ts", 0) or 0),
+            bybit_interval_h=int(position.get("bybit_interval_h", 8) or 8),
+            kucoin_interval_h=int(position.get("kucoin_interval_h", 8) or 8),
+            dominant_payment_ts=_dominant_exchange_ts({
+                "bybit_rate_pct": position.get("entry_rate_bybit", 0),
+                "kucoin_rate_pct": position.get("entry_rate_kucoin", 0),
+                "bybit_next_ts": position.get("bybit_next_ts", 0),
+                "kucoin_next_ts": position.get("kucoin_next_ts", 0),
+            }),
+        )
+        self._live_position_id = position.get("id")
+        self._entry_balance_snapshot = {"time": time.time()}
+        self._last_hedge_check = 0.0
+        self._hedge_triggered = False
+        self._funding_threshold_met = False
+        self._state = State.LIVE
+        log.warning("Automation engine: resumed LIVE monitoring for %s (position %s) after restart",
+                    symbol, str(self._live_position_id)[:12])
+
     def start(self):
         if self._thread and self._thread.is_alive():
             return
