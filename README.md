@@ -6,6 +6,22 @@ Bot melakukan **Short** pada exchange dengan funding rate lebih tinggi, dan **Lo
 
 ---
 
+## 🆕 WHATS NEW? (Juli 2026)
+
+**5 bug fixes besar — test suite 106/106 ✅**
+
+| Fix | Judul | Masalah | Solusi |
+|-----|-------|---------|--------|
+| #1 | `entry_spread` LiveEngine | LiveEngine tidak menyimpan `entry_spread` ke posisi dict → `/portfolio` selalu tampil `—` dan `_estimate_exit_pnl()` underestimate price PnL untuk posisi live | Tambah `entry_spread` dari scan snapshot ke posisi dict LiveEngine (seperti PaperEngine) |
+| #2 | Hedge Guard Partial Leg | Hedge guard hanya deteksi leg yang **fully closed** (qty=0). Partial liquidation (leg tereduksi ke 40% tapi masih `open`) tidak terdeteksi → naked exposure | `HEDGE_BALANCE_DROP_THRESHOLD` sekarang enforced: cek drift ratio sisa ukuran leg via `_hedge_leg_drift()`. `close_position()` defensive clamp ke live size sebelum order |
+| #3 | Live Restart Resume | Bot restart → automation engine mulai dari IDLE, `_live_position_id=None`. Hedge guard, delisting guard, exit logic **hilang** untuk posisi yang masih terbuka | `resume_live_position()` ricostruksi `DelayOrder` dari field yang dipersist. `bot.py` auto-resume saat restart (live mode). 4 field baru di posisi dict (`entry_delta`, `entry_raw_fr_diff`, `bybit_next_ts`, `kucoin_next_ts`) |
+| #4 | `/scan` WS Subscription Cap | `/scan` subscribe semua common symbols ke WebSocket tanpa batas → bisa trigger disconnect loop kalau >100 pairs | `MAX_WS_SUBSCRIPTIONS=100` (env-overridable) diterapkan seragam di `bot.py`, `bg_scanner.py`, dan `handlers/scan.py` |
+| #5 | Multi-Position Live Tracking | Automation engine hanya bisa track **1 posisi** (`_live_order`/`_live_position_id` singular). Entry kedua overwrite yang pertama. `State.LIVE` blokir state machine dari cari kandidat baru | `LiveTrackedPosition` dataclass per posisi. `_live_positions: Dict[str, ...]` ganti 6 singular fields. `State.LIVE` dihapus — live monitoring & entry-side dispatcher jalan independen tiap tick. `AUTO_MAX_POSITIONS` benar-benar berfungsi sekarang |
+
+**Detail teknis:** lihat file `fix-01` s/d `fix-05` di repo atau commit history.
+
+---
+
 ## Overview
 
 FR-Bot adalah bot trading otomatis yang mengeksploitasi selisih *funding rate* (Diff FR) antara dua exchange perpetual futures: Bybit dan KuCoin. Strateginya *delta-neutral*: posisi Long dan Short dibuka bersamaan dengan ukuran sama, sehingga paparan arah harga (directional risk) di-hedge. Profit bersih berasal dari akumulasi pembayaran funding rate, bukan dari spekulasi harga.
