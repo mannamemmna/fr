@@ -14,6 +14,7 @@ from config import (
     BOT_TOKEN, PAPER_MODE, AUTO_SCAN_INTERVAL, NOTIFY_CHAT_ID, AUTO_MODE,
     AUTO_CLOSE_ON_RESTART,
     DELISTING_MONITOR_ENABLED,
+    MAX_WS_SUBSCRIPTIONS,
 )
 from core.paper_engine import PaperEngine
 from core.live_engine import LiveEngine, LiveModeLockedError, MissingLiveCredentialsError
@@ -84,7 +85,7 @@ def main():
         syms = [o["symbol"] for o in initial.get("opportunities", [])]
         # Limit WebSocket subscriptions — subscribe TOP N by delta_pct only
         # 539 pair overload WS connection (disconnect loop). 50-100 is safe.
-        max_ws = 100
+        max_ws = MAX_WS_SUBSCRIPTIONS
         if len(syms) > max_ws:
             syms = syms[:max_ws]
             log.info("Trimmed WS subscriptions to top %d symbols by funding diff", max_ws)

@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import threading
 
-from config import AUTO_SCAN_INTERVAL, BOT_TOKEN
+from config import AUTO_SCAN_INTERVAL, BOT_TOKEN, MAX_WS_SUBSCRIPTIONS
 from core.scanner import run_scan
 import handlers.state as state
 
@@ -65,7 +65,7 @@ def _bg_scanner_loop():
 
             # Update WebSocket subscription with all common symbols (limited to 100)
             symbols = [o["symbol"] for o in payload.get("opportunities", [])]
-            max_ws = 100
+            max_ws = MAX_WS_SUBSCRIPTIONS
             if len(symbols) > max_ws:
                 symbols = symbols[:max_ws]
             if symbols and state.ws_pool:
