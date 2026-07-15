@@ -142,6 +142,21 @@ class LiveGuardTests(unittest.TestCase):
         self.assertGreaterEqual(close_result["fr_received"], 0)
         self.assertGreater(engine._total_fees, 0.2)
 
+    @patch("core.live_engine.read_opportunities")
+    @patch("core.live_engine.time.sleep", return_value=None)
+    def test_position_includes_entry_spread_from_scan(self, _mock_sleep, mock_read_opps):
+        mock_read_opps.return_value = {"opportunities": [{
+            "symbol": "BTC", "spread_pct": -0.1234,
+            "bybit_rate_pct": 0.01, "kucoin_rate_pct": -0.02,
+            "bybit_interval_h": 8, "kucoin_interval_h": 8,
+        }]}
+        bybit, kucoin = _make_clients()
+        engine = LiveEngine(live_confirm=True, bybit_client=bybit, kucoin_client=kucoin)
+        result = engine.execute_instant("BTC", 100, "sell", "buy", 3)
+        self.assertEqual(result["status"], "done")
+        self.assertIn("entry_spread", result["position"])
+        self.assertEqual(result["position"]["entry_spread"], -0.1234)
+
     @patch("core.live_engine.time.sleep", return_value=None)
     def test_get_summary_includes_unrealized_pnl_when_position_open(self, _mock_sleep):
         bybit, kucoin = _make_clients()

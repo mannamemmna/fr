@@ -438,6 +438,7 @@ class LiveEngine:
             "entry_price_kucoin": entry_price_kc,
             "entry_fee_bybit": entry_fee_bb,
             "entry_fee_kucoin": entry_fee_kc,
+            "entry_spread": opp.get("spread_pct", 0),
             "entry_rate_bybit": opp.get("bybit_rate_pct", 0),
             "entry_rate_kucoin": opp.get("kucoin_rate_pct", 0),
             "bybit_interval_h": opp.get("bybit_interval_h", 8),
