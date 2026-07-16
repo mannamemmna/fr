@@ -133,9 +133,14 @@ async def cmd_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if o["symbol"].upper() == p["symbol"].upper():
                 exit_bb = o.get("bybit_mark") or 0
                 exit_kc = o.get("kucoin_mark") or 0
-                qty = p.get("quantity", 0)
-                pnl_bb = qty * (entry_bb - exit_bb) if p["side_bybit"].upper() == "SELL" else qty * (exit_bb - entry_bb)
-                pnl_kc = qty * (entry_kc - exit_kc) if p["side_kucoin"].upper() == "SELL" else qty * (exit_kc - entry_kc)
+                # Use per-leg qty -- qty_bybit and qty_kucoin can legitimately
+                # differ (different entry prices per exchange in paper mode;
+                # partial-fill reconciliation in live mode), so a single
+                # shared quantity understates or overstates one leg's PnL.
+                qty_bb = p.get("qty_bybit", 0) or p.get("quantity", 0)
+                qty_kc = p.get("qty_kucoin", 0) or p.get("quantity", 0)
+                pnl_bb = qty_bb * (entry_bb - exit_bb) if p["side_bybit"].upper() == "SELL" else qty_bb * (exit_bb - entry_bb)
+                pnl_kc = qty_kc * (entry_kc - exit_kc) if p["side_kucoin"].upper() == "SELL" else qty_kc * (exit_kc - entry_kc)
                 upnl_val = f"{(pnl_bb + pnl_kc):+.2f}"
                 upnl = code(upnl_val)
                 break

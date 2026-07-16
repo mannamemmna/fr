@@ -42,7 +42,7 @@ async def cmd_rebalance(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             lines = [b("📋 TRANSFER TERAKHIR (5)")]
             for t in transfers:
-                icon = "🟢" if t.get("type") == "withdraw_complete" else ("🔴" if "fail" in t.get("type", "") else "🟡")
+                icon = "🟢" if t.get("type") == "internal_transfer_complete" else ("🔴" if "fail" in t.get("type", "") else "🟡")
                 cid = t.get('client_id', '')[:12]
                 fr = esc(t.get('from', '?'))
                 to = esc(t.get('to', '?'))

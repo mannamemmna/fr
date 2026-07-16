@@ -57,6 +57,12 @@ async def cmd_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     raw_symbol = " ".join(context.args).upper().strip()
+    # Literal suffix removal, not rstrip() -- rstrip("USDT") strips a
+    # CHARACTER SET (any trailing U/S/D/T), which mangles base symbols that
+    # themselves end in one of those letters. "DOTUSDT" would become "DO"
+    # (loses the T twice over) instead of "DOT"; "GASUSDT" would become "GA"
+    # instead of "GAS". removesuffix() only strips the literal substring.
+    raw_symbol_base = raw_symbol.removesuffix("USDT")
     data = read_opportunities()
     opps = data.get("opportunities", [])
 
@@ -65,7 +71,7 @@ async def cmd_pair(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for o in opps:
         sym = o["symbol"].upper()
         uni = o.get("unified_symbol", "").upper()
-        if sym == raw_symbol or sym == raw_symbol.rstrip("USDT") or uni == raw_symbol or \
+        if sym == raw_symbol or sym == raw_symbol_base or uni == raw_symbol or \
            uni.startswith(raw_symbol) or raw_symbol in sym:
             match = o
             break
