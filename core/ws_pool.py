@@ -160,16 +160,6 @@ class WSConnection:
         """Override in subclass."""
         pass
 
-    def send(self, data):
-        """Send raw message. Safe thread."""
-        if self._ws and self._connected.is_set():
-            try:
-                self._ws.send(data)
-            except Exception:
-                pass
-
-
-# ─── Bybit WebSocket ────────────────────────────────────────────────────────
 
 class BybitWS(WSConnection):
     """Bybit V5 public linear WebSocket.

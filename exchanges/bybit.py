@@ -26,7 +26,6 @@ REST_URL = "https://api.bybit.com/v5/market/tickers?category=linear"
 
 class BybitClient(BaseExchangeClient):
     name = "bybit"
-    ccxt_id = "bybit"
 
     def fetch_all_funding_rates(self) -> dict[str, FundingRate]:
         log.info("Bybit: bulk fetch starting…")

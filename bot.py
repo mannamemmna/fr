@@ -45,6 +45,7 @@ from handlers.pair import cmd_pair
 from handlers.rebalance import cmd_rebalance
 from core.delisting_monitor import start_delisting_monitor
 from handlers.blacklist import cmd_blacklist
+from handlers.simulate import cmd_simulate
 
 logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -269,6 +270,7 @@ def main():
     app.add_handler(CommandHandler("pair", cmd_pair))
     app.add_handler(CommandHandler("rebalance", cmd_rebalance))
     app.add_handler(CommandHandler("blacklist", cmd_blacklist))
+    app.add_handler(CommandHandler("simulate", cmd_simulate))
  
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
         import telegram.error as _te

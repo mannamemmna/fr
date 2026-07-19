@@ -268,12 +268,3 @@ class KuCoinLiveClient:
         with get_limiter("kucoin", 10):
             j = self._request("POST", "/api/v3/accounts/universal-transfer", body=body)
         return {"transfer_id": j.get("data", {}).get("orderId") or client_oid, "raw": j}
-
-    def get_internal_transfer_status(self, client_oid: str) -> dict:
-        """KuCoin universal-transfer is typically synchronous — success/failure is
-        returned in the original POST response. This poller exists mainly to
-        handle the resume-after-restart case where we only persisted the
-        client_oid and need to re-check via a transfer-history lookup."""
-        with get_limiter("kucoin", 10):
-            j = self._request("GET", "/api/v3/accounts/transferable", {"currency": "USDT", "type": "FUTURES"})
-        return {"status": "unknown", "raw": j}

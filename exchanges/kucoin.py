@@ -31,7 +31,6 @@ REST_URL = "https://api-futures.kucoin.com/api/v1/contracts/active"
 
 class KuCoinClient(BaseExchangeClient):
     name = "kucoin"
-    ccxt_id = "kucoinfutures"
 
     def fetch_all_funding_rates(self) -> dict[str, FundingRate]:
         log.info("KuCoin: bulk fetch starting…")

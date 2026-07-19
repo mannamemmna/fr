@@ -5,7 +5,6 @@ aiosignal==1.4.0
 anyio==4.14.0
 APScheduler==3.11.2
 attrs==26.1.0
-ccxt==4.5.59
 certifi==2026.6.17
 cffi==2.0.0
 charset-normalizer==3.4.7
@@ -28,4 +27,3 @@ tzlocal==5.4.3
 urllib3==2.7.0
 websocket-client==1.8.0
 yarl==1.24.2
-websocket-client==1.8.0
