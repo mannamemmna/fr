@@ -48,7 +48,7 @@ DB_PATH: str = str(os.getenv("DB_PATH", "fr-bot.db"))
 # list is subscribed: initial bootstrap (bot.py), background scanner
 # (core/bg_scanner.py), and manual /scan (handlers/scan.py) — kept as one
 # constant so all three stay in sync.
-MAX_WS_SUBSCRIPTIONS: int = int(os.getenv("MAX_WS_SUBSCRIPTIONS", "100"))
+MAX_WS_SUBSCRIPTIONS: int = int(os.getenv("MAX_WS_SUBSCRIPTIONS", "20"))
 
 # ─── Leverage ───
 DEFAULT_LEVERAGE: int = int(os.getenv("DEFAULT_LEVERAGE", "2"))

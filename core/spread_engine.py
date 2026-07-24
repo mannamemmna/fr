@@ -88,11 +88,15 @@ class SpreadEngine:
     def _compute(self, symbol: str) -> Optional[SpreadSignal]:
         """Compute opportunity signal for one pair. Returns None if data incomplete."""
 
-        # Prices
-        bybit_price = self._price.get_price("bybit", symbol)
-        kucoin_price = self._price.get_price("kucoin", symbol)
-        if bybit_price <= 0 or kucoin_price <= 0:
+        # Prices -- bid/ask drive the spread math (a market SELL fills at
+        # the bid, a market BUY fills at the ask); mark is kept only for
+        # display/back-compat fields.
+        bybit_bid, bybit_ask = self._price.get_bid_ask("bybit", symbol)
+        kucoin_bid, kucoin_ask = self._price.get_bid_ask("kucoin", symbol)
+        if bybit_bid <= 0 or bybit_ask <= 0 or kucoin_bid <= 0 or kucoin_ask <= 0:
             return None
+        bybit_mark = self._price.get_price("bybit", symbol)
+        kucoin_mark = self._price.get_price("kucoin", symbol)
 
         # Funding
         bb_funding = self._funding.get(symbol, "bybit")
@@ -115,17 +119,17 @@ class SpreadEngine:
         if raw_fr_diff > 0:
             direction = "SHORT Bybit / LONG KuCoin"
             bybit_action, kucoin_action = "SHORT", "LONG"
-            p_short = bybit_price
-            p_long = kucoin_price
+            p_short = bybit_bid    # selling (short) on Bybit fills at Bybit's bid
+            p_long = kucoin_ask    # buying (long) on KuCoin fills at KuCoin's ask
         elif raw_fr_diff < 0:
             direction = "SHORT KuCoin / LONG Bybit"
             bybit_action, kucoin_action = "LONG", "SHORT"
-            p_short = kucoin_price
-            p_long = bybit_price
+            p_short = kucoin_bid
+            p_long = bybit_ask
         else:
             direction = "FLAT"
             bybit_action, kucoin_action = "—", "—"
-            p_short = p_long = bybit_price
+            p_short = p_long = bybit_bid
 
         # Price Spread
         price_spread = ((p_long - p_short) / p_short) * 100.0 if p_short > 0 else 0.0
@@ -156,8 +160,12 @@ class SpreadEngine:
 
         signal = {
             "symbol": symbol,
-            "bybit_price": round(bybit_price, 8),
-            "kucoin_price": round(kucoin_price, 8),
+            "bybit_price": round(bybit_mark, 8),
+            "kucoin_price": round(kucoin_mark, 8),
+            "bybit_bid": round(bybit_bid, 8),
+            "bybit_ask": round(bybit_ask, 8),
+            "kucoin_bid": round(kucoin_bid, 8),
+            "kucoin_ask": round(kucoin_ask, 8),
             "price_spread_pct": round(price_spread, 6),
             "bybit_rate_pct": round(bb_rate * 100, 6),
             "kucoin_rate_pct": round(kc_rate * 100, 6),

@@ -33,6 +33,8 @@ class FundingRate:
     index_price: Optional[float]
     funding_next_time: Optional[int]   # ms epoch (next funding timestamp)
     interval_hours: int        # 1, 4, or 8
+    bid_price: Optional[float] = None  # best bid, if the bulk REST endpoint carries it (Bybit: yes; KuCoin: no)
+    ask_price: Optional[float] = None  # best ask, same caveat
 
     @property
     def is_valid(self) -> bool:

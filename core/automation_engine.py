@@ -1223,13 +1223,28 @@ class AutomationEngine:
     # ─── Helpers ────────────────────────────────────────────────────────
 
     def _calculate_price_spread(self, opp: dict, side_bb: str, side_kc: str) -> float:
-        """Calculate price spread ((P_Long - P_Short) / P_Short * 100)."""
-        bb_mark = opp.get("bybit_mark", 0) or 0
-        kc_mark = opp.get("kucoin_mark", 0) or 0
-        if bb_mark <= 0 or kc_mark <= 0:
+        """Calculate price spread ((P_Long - P_Short) / P_Short * 100) using
+        REAL bid/ask, not mark price -- a market SELL fills at the bid, a
+        market BUY fills at the ask, so this reflects actual execution
+        cost rather than an idealized reference price.
+
+        side_bb/side_kc are the EXPLICIT, already-decided sides for a
+        specific order/position -- deliberately NOT re-derived from the
+        opportunity's current recommended direction, since this is also
+        called post-entry (e.g. Tahap 1's "arah FR flip" check in
+        _tick_live_same_interval), where funding direction can have
+        flipped since entry while the position's actual sides haven't.
+        """
+        bb_bid = opp.get("bybit_bid", 0) or 0
+        bb_ask = opp.get("bybit_ask", 0) or 0
+        kc_bid = opp.get("kucoin_bid", 0) or 0
+        kc_ask = opp.get("kucoin_ask", 0) or 0
+        if bb_bid <= 0 or bb_ask <= 0 or kc_bid <= 0 or kc_ask <= 0:
             return 0.0
-        p_short = bb_mark if side_bb == "sell" else kc_mark
-        p_long = kc_mark if side_kc == "buy" else bb_mark
+        p_short = bb_bid if side_bb == "sell" else kc_bid
+        p_long = kc_ask if side_kc == "buy" else bb_ask
+        if p_short <= 0:
+            return 0.0
         return ((p_long - p_short) / p_short) * 100.0
 
     def _get_scan(self) -> List[dict]:

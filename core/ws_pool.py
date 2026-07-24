@@ -1,10 +1,15 @@
 """WebSocket Connection Pool — Bybit + KuCoin real-time market data.
 
 Architecture:
-    ws_pool  ──callback──→  price_cache + funding_cache  ──→  spread_engine
+    ws_pool  ----callback---->  price_cache + funding_cache  ---->  spread_engine
 
 Each exchange gets its own connection. Auto-reconnect with exponential backoff.
 All subscriptions are re-sent on reconnect.
+
+Public price/funding topics (this file) feed price_cache/funding_cache,
+which drive candidate scoring and the entry/exit spread math. Private
+account topics (position/order/balance) are a separate module --
+see core/ws_private.py.
 """
 
 from __future__ import annotations
@@ -33,19 +38,11 @@ from core.rate_limiter import get_limiter
 
 log = logging.getLogger("fr-bot.ws")
 
-# ─── Callback type ──────────────────────────────────────────────────────────
-# Called on every meaningful message: (exchange, type, data)
-# type: 'price', 'funding', 'ticker'
 MessageCallback = Callable[[str, str, dict], None]
-
-# ─── WebSocket connection ────────────────────────────────────────────────────
 
 
 class WSConnection:
-    """Single WebSocket connection to one exchange with auto-reconnect.
-
-    Uses `websocket.WebSocketApp` in a daemon thread.
-    """
+    """Single WebSocket connection to one exchange with auto-reconnect."""
 
     def __init__(self, name: str, url: str,
                  on_message: Callable,
@@ -62,8 +59,6 @@ class WSConnection:
         self._connected_since: float = 0.0
         self._subscribed_topics: list[str] = []
 
-    # ─── Public API ───────────────────────────────────────────────────
-
     def start(self):
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, daemon=True, name=f"ws-{self.name}")
@@ -78,13 +73,10 @@ class WSConnection:
         log.info("[%s] WS connection stopped", self.name)
 
     def subscribe(self, topics: list[str]):
-        """Set subscription topics. Sent on next (re)connect."""
         self._subscribed_topics = topics
 
     def is_connected(self) -> bool:
         return self._connected.is_set()
-
-    # ─── Internal ─────────────────────────────────────────────────────
 
     def _run(self):
         while not self._stop.is_set():
@@ -109,7 +101,6 @@ class WSConnection:
             on_error=self._on_error,
             on_close=self._on_close,
         )
-        # Run in blocking mode — will block until disconnected
         self._ws.run_forever(
             ping_interval=WS_HEARTBEAT_SEC,
             ping_timeout=5,
@@ -117,15 +108,12 @@ class WSConnection:
         )
 
     def _refresh_url(self):
-        """Override di subclass yang connect URL-nya bisa basi antar koneksi
-        (mis. bullet token KuCoin yang sekali pakai). No-op secara default."""
         pass
 
     def _on_open(self, ws):
         self._connected.set()
         self._connected_since = time.time()
         log.info("[%s] WS connected", self.name)
-        # Re-subscribe
         if self._subscribed_topics:
             self._subscribe_topics(ws)
         if self._on_connect:
@@ -157,14 +145,16 @@ class WSConnection:
         self._stop.wait(total)
 
     def _subscribe_topics(self, ws):
-        """Override in subclass."""
         pass
 
 
 class BybitWS(WSConnection):
     """Bybit V5 public linear WebSocket.
 
-    Docs: https://bybit-exchange.github.io/docs/v5/ws/connect
+    Single topic (tickers.{symbol}) carries markPrice, fundingRate, AND
+    bid1Price/ask1Price together in the same push -- confirmed against
+    Bybit's V5 "Get Tickers" / WS tickers schema. No second subscription
+    needed to get bid/ask; it was already flowing through, just not read.
     """
 
     TICKER_BASE = "tickers."
@@ -197,7 +187,6 @@ class BybitWS(WSConnection):
         except json.JSONDecodeError:
             return
 
-        # Bybit ticker push
         if msg.get("topic", "").startswith(self.TICKER_BASE):
             data = msg.get("data", {})
             if not data:
@@ -207,37 +196,45 @@ class BybitWS(WSConnection):
                 return
 
             mark = _safe_float(data.get("markPrice"))
-            if mark and mark > 0:
-                self._price_cache.update("bybit", unified, mark)
+            bid = _safe_float(data.get("bid1Price"))
+            ask = _safe_float(data.get("ask1Price"))
+            if mark is not None or bid is not None or ask is not None:
+                self._price_cache.update("bybit", unified, mark=mark, bid=bid, ask=ask)
 
             fr = _safe_float(data.get("fundingRate"))
             if fr is not None:
                 nft = _safe_int(data.get("nextFundingTime"))
                 interval = _safe_int(data.get("fundingIntervalHour")) or 8
-                self._funding_cache.update(
-                    "bybit", unified, fr, fr, nft, interval,
-                )
+                self._funding_cache.update("bybit", unified, fr, fr, nft, interval)
                 self._on_spread_update and self._on_spread_update("bybit", "funding", {
                     "symbol": unified, "funding_rate": fr,
                     "next_funding_ts": nft, "interval_h": interval,
                 })
+            elif bid is not None or ask is not None:
+                self._on_spread_update and self._on_spread_update("bybit", "price", {"symbol": unified})
 
     def _topic_to_unified(self, topic: str) -> Optional[str]:
         prefix = self.TICKER_BASE
         if not topic.startswith(prefix):
             return None
         raw = topic[len(prefix):]
-        # "BTCUSDT" -> "BTC/USDT:USDT"
         from exchanges.symbols import bybit_to_unified
         return bybit_to_unified(raw)
 
-
-# ─── KuCoin WebSocket ───────────────────────────────────────────────────────
 
 class KuCoinWS(WSConnection):
     """KuCoin Futures WebSocket (public).
 
     KuCoin requires a token first via REST, then connect to the provided endpoint.
+
+    TWO topic subscriptions per symbol (unlike Bybit's single topic):
+      - /contract/instrument:{symbol}  -- markPrice (subject "mark.index.price")
+        and fundingRate (subject "funding.rate"). NOTE: the topic name used
+        here previously was "/contract/ticker:{symbol}", which does not
+        match any topic in KuCoin's published Futures WS docs -- see "Bug A"
+        at the top of this document. This fixes that.
+      - /contractMarket/tickerV2:{symbol} -- bestBidPrice/bestAskPrice. This
+        is the NEW subscription added for bid/ask spread math.
     """
 
     def __init__(self, symbols: list[str],
@@ -248,7 +245,7 @@ class KuCoinWS(WSConnection):
         self._price_cache = price_cache
         self._funding_cache = funding_cache
         self._on_spread_update = on_spread_update
-        self._pings_sent = 0
+        self._sub_id_counter = 0
 
         url = self._get_ws_url()
         if url is None:
@@ -256,7 +253,6 @@ class KuCoinWS(WSConnection):
         super().__init__("kucoin", url, on_message=self._handle_message)
 
     def _get_ws_url(self) -> Optional[str]:
-        """Obtain KuCoin WebSocket endpoint via REST bullet API."""
         with get_limiter("kucoin", 10):
             try:
                 r = requests.post(
@@ -274,32 +270,42 @@ class KuCoinWS(WSConnection):
         return None
 
     def _refresh_url(self):
-        """Bullet token KuCoin cuma berlaku untuk satu sesi — pakai ulang
-        setelah koneksi yang dituju sudah tutup bikin server terima handshake
-        lalu langsung close dengan code=1000 msg='Bye'. Ambil token baru
-        sebelum tiap percobaan koneksi, termasuk reconnect setelah drop."""
         fresh = self._get_ws_url()
         if fresh:
             self.url = fresh
         else:
-            log.warning("[kucoin] Could not refresh bullet token — retrying with previous URL")
+            log.warning("[kucoin] Could not refresh bullet token -- retrying with previous URL")
 
     def update_symbols(self, symbols: list[str]):
         self._symbols = symbols
         if self.is_connected():
             self._subscribe_topics(self._ws)
 
+    def _next_sub_id(self) -> str:
+        self._sub_id_counter += 1
+        return f"{int(time.time() * 1000)}-{self._sub_id_counter}"
+
     def _subscribe_topics(self, ws):
         for sym in self._symbols:
-            topic = f"/contract/ticker:{sym}USDTM"
-            sub = json.dumps({
-                "id": str(int(time.time() * 1000)),
+            base = f"{sym}USDTM"
+
+            sub_instrument = json.dumps({
+                "id": self._next_sub_id(),
                 "type": "subscribe",
-                "topic": topic,
+                "topic": f"/contract/instrument:{base}",
                 "response": False,
             })
-            ws.send(sub)
-        log.info("[kucoin] Subscribed to %d tickers", len(self._symbols))
+            ws.send(sub_instrument)
+
+            sub_ticker = json.dumps({
+                "id": self._next_sub_id(),
+                "type": "subscribe",
+                "topic": f"/contractMarket/tickerV2:{base}",
+                "response": False,
+            })
+            ws.send(sub_ticker)
+        log.info("[kucoin] Subscribed to %d symbols (instrument + tickerV2, %d topics total)",
+                 len(self._symbols), len(self._symbols) * 2)
 
     def _handle_message(self, exchange: str, raw: str):
         try:
@@ -307,45 +313,56 @@ class KuCoinWS(WSConnection):
         except json.JSONDecodeError:
             return
 
-        # KuCoin ticker push
-        if msg.get("type") == "message" and "topic" in msg:
-            topic = msg["topic"]
-            if "/contract/ticker:" in topic:
-                raw_sym = topic.split(":")[-1]
-                data = msg.get("data", {})
-                if not data:
-                    return
-                from exchanges.symbols import kucoin_to_unified
-                unified = kucoin_to_unified(raw_sym)
+        if msg.get("type") != "message" or "topic" not in msg:
+            if msg.get("type") == "welcome":
+                log.info("[kucoin] WS welcome received")
+            return
 
-                mark = _safe_float(data.get("markPrice"))
-                if mark and mark > 0:
-                    self._price_cache.update("kucoin", unified, mark)
+        topic = msg["topic"]
+        data = msg.get("data", {})
+        if not data:
+            return
 
-                fr = _safe_float(data.get("fundingRate"))
-                if fr is not None:
-                    npr = _safe_float(data.get("predictedFundingFeeRate")) or fr
-                    nft = _safe_int(data.get("nextFundingRateTime"))
-                    # Bug fix: jangan hitung interval dari time-to-next-payment.
-                    # Gunakan interval_h yang sudah ada dari REST scan (fundingRateGranularity).
-                    # Fallback ke 8 jika belum ada data sebelumnya.
-                    existing = self._funding_cache.get(unified, "kucoin")
-                    interval_h = existing.get("interval_h", 8) if existing else 8
-                    self._funding_cache.update(
-                        "kucoin", unified, fr, npr, nft, max(int(interval_h), 1),
-                    )
-                    self._on_spread_update and self._on_spread_update("kucoin", "funding", {
-                        "symbol": unified, "funding_rate": fr,
-                        "next_funding_ts": nft,
-                    })
-        # KuCoin welcome/pong — ignore
-        elif msg.get("type") == "welcome":
-            log.info("[kucoin] WS welcome received")
-        elif msg.get("type") == "pong":
-            pass
+        if "/contract/instrument:" in topic:
+            self._handle_instrument(topic, msg.get("subject", ""), data)
+        elif "/contractMarket/tickerV2:" in topic:
+            self._handle_ticker_v2(topic, data)
 
+    def _handle_instrument(self, topic: str, subject: str, data: dict):
+        from exchanges.symbols import kucoin_to_unified
+        raw_sym = topic.split(":")[-1]
+        unified = kucoin_to_unified(raw_sym)
 
-# ─── Connection Pool ────────────────────────────────────────────────────────
+        if subject == "mark.index.price":
+            mark = _safe_float(data.get("markPrice"))
+            if mark is not None:
+                self._price_cache.update("kucoin", unified, mark=mark)
+                self._on_spread_update and self._on_spread_update("kucoin", "price", {"symbol": unified})
+            return
+
+        if subject == "funding.rate":
+            fr = _safe_float(data.get("fundingRate"))
+            if fr is None:
+                return
+            nft = _safe_int(data.get("nextFundingRateTime")) or _safe_int(data.get("timestamp"))
+            existing = self._funding_cache.get(unified, "kucoin")
+            interval_h = existing.get("interval_h", 8) if existing else 8
+            self._funding_cache.update("kucoin", unified, fr, fr, nft, max(int(interval_h), 1))
+            self._on_spread_update and self._on_spread_update("kucoin", "funding", {
+                "symbol": unified, "funding_rate": fr, "next_funding_ts": nft,
+            })
+
+    def _handle_ticker_v2(self, topic: str, data: dict):
+        from exchanges.symbols import kucoin_to_unified
+        raw_sym = topic.split(":")[-1]
+        unified = kucoin_to_unified(raw_sym)
+
+        bid = _safe_float(data.get("bestBidPrice"))
+        ask = _safe_float(data.get("bestAskPrice"))
+        if bid is not None or ask is not None:
+            self._price_cache.update("kucoin", unified, bid=bid, ask=ask)
+            self._on_spread_update and self._on_spread_update("kucoin", "price", {"symbol": unified})
+
 
 class WSPool:
     """Manages both exchange connections + delegates messages to caches."""
@@ -359,18 +376,15 @@ class WSPool:
         self.kucoin: Optional[KuCoinWS] = None
 
     def start(self, symbols: list[str]):
-        """Start both WebSocket connections with subscribed symbols."""
         syms = symbols or []
         self.bybit = BybitWS(syms, self.price_cache, self.funding_cache, self._on_spread_update)
         self.kucoin = KuCoinWS(syms, self.price_cache, self.funding_cache, self._on_spread_update)
         self.bybit.start()
-        # Small delay so KuCoin token request is not blocked
         time.sleep(0.5)
         self.kucoin.start()
         log.info("WSPool started with %d symbols", len(syms))
 
     def update_symbols(self, symbols: list[str]):
-        """Resubscribe with new symbol list."""
         if self.bybit:
             self.bybit.update_symbols(symbols)
         if self.kucoin:
@@ -388,8 +402,6 @@ class WSPool:
             return False
         return self.bybit.is_connected() and self.kucoin.is_connected()
 
-
-# ─── Helpers ────────────────────────────────────────────────────────────────
 
 def _safe_float(v) -> Optional[float]:
     if v is None or v == "" or v == 0:

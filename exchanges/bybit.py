@@ -73,6 +73,8 @@ class BybitClient(BaseExchangeClient):
                     index_price=idx,
                     funding_next_time=nft,
                     interval_hours=interval,
+                    bid_price=_safe_float(row.get("bid1Price")),
+                    ask_price=_safe_float(row.get("ask1Price")),
                 )
             log.info("Bybit: %d rates in %.2fs", len(out), time.time() - t0)
             return out

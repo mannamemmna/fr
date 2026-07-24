@@ -58,10 +58,27 @@ def find_opportunities(bybit_rates: dict, kucoin_rates: dict) -> list[dict]:
 
         bb_mark = b.mark_price or b.index_price or 0
         kc_mark = k.mark_price or k.index_price or 0
+
+        # Bid/ask for spread math -- Bybit's bulk REST tickers response
+        # already carries real bid1Price/ask1Price (same payload as
+        # funding/mark, no extra call). KuCoin's bulk /contracts/active
+        # endpoint does NOT carry live bid/ask (only its per-symbol ticker
+        # REST call or WS tickerV2 topic do, and hitting that per-symbol
+        # for ~600+ contracts just for this fallback path isn't worth the
+        # REST load) -- approximate with mark price for KuCoin specifically
+        # here. This function is the REST fallback/cold-start/display path
+        # (/scan, /top, /pair, manual /execute); the real-time WS path
+        # (core/spread_engine.py) that actually drives automated entry/exit
+        # has TRUE bid/ask for both exchanges within seconds of startup.
+        bb_bid = b.bid_price or bb_mark
+        bb_ask = b.ask_price or bb_mark
+        kc_bid = kc_mark
+        kc_ask = kc_mark
+
         price_spread = 0.0
-        if bb_mark > 0 and kc_mark > 0:
-            p_short = bb_mark if bybit_action == "SHORT" else kc_mark
-            p_long = kc_mark if kucoin_action == "LONG" else bb_mark
+        if bb_bid > 0 and bb_ask > 0 and kc_bid > 0 and kc_ask > 0:
+            p_short = bb_bid if bybit_action == "SHORT" else kc_bid
+            p_long = kc_ask if kucoin_action == "LONG" else bb_ask
             if p_short > 0:
                 price_spread = ((p_long - p_short) / p_short) * 100.0
 
@@ -105,6 +122,10 @@ def find_opportunities(bybit_rates: dict, kucoin_rates: dict) -> list[dict]:
             "unified_symbol": sym,
             "spread_pct": round(price_spread, 6),
             "spread_abs": round(abs(price_spread), 6),
+            "bybit_bid": round(bb_bid, 8),
+            "bybit_ask": round(bb_ask, 8),
+            "kucoin_bid": round(kc_bid, 8),
+            "kucoin_ask": round(kc_ask, 8),
             "raw_fr_diff": round(raw_fr_diff * 100, 6),
             "funding_diff_pct": funding_diff_pct,
             "delta_pct": funding_diff_pct,  # keep for backwards compatibility if needed, but we'll use funding_diff_pct
